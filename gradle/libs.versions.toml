@@ -3,7 +3,7 @@
 [versions]
 
 checkstyle = "9.3"
-lwjgl3 = "3.3.6"
+lwjgl3 = "3.4.1"
 nifty = "1.4.3"
 
 [libraries]
@@ -24,6 +24,8 @@ jnaerator-runtime = "com.nativelibs4java:jnaerator-runtime:0.12"
 junit4 = "junit:junit:4.13.2"
 lwjgl2 = "org.jmonkeyengine:lwjgl:2.9.5"
 lwjgl3-awt = "org.lwjglx:lwjgl3-awt:0.2.3"
+joml = "org.joml:joml:1.10.8"  # <--- 新增的 JOML
+
 
 lwjgl3-base     = { module = "org.lwjgl:lwjgl",          version.ref = "lwjgl3" }
 lwjgl3-glfw     = { module = "org.lwjgl:lwjgl-glfw",     version.ref = "lwjgl3" }
@@ -35,8 +37,14 @@ lwjgl3-opengl   = { module = "org.lwjgl:lwjgl-opengl",   version.ref = "lwjgl3" 
 lwjgl3-openvr   = { module = "org.lwjgl:lwjgl-openvr",   version.ref = "lwjgl3" }
 lwjgl3-ovr      = { module = "org.lwjgl:lwjgl-ovr",      version.ref = "lwjgl3" }
 
-mokito-core = "org.mockito:mockito-core:3.12.4"
+# === 下面 4 行是新增的 Vulkan 相关模块 ===
+lwjgl3-vulkan   = { module = "org.lwjgl:lwjgl-vulkan",   version.ref = "lwjgl3" }
+lwjgl3-shaderc  = { module = "org.lwjgl:lwjgl-shaderc",  version.ref = "lwjgl3" }
+lwjgl3-spvc     = { module = "org.lwjgl:lwjgl-spvc",     version.ref = "lwjgl3" }
+lwjgl3-vma      = { module = "org.lwjgl:lwjgl-vma",      version.ref = "lwjgl3" }
 
+
+mokito-core = "org.mockito:mockito-core:3.12.4"
 nifty                  = { module = "com.github.nifty-gui:nifty",                  version.ref = "nifty" }
 nifty-default-controls = { module = "com.github.nifty-gui:nifty-default-controls", version.ref = "nifty" }
 nifty-examples         = { module = "com.github.nifty-gui:nifty-examples",         version.ref = "nifty" }

@@ -1,0 +1,44 @@
+#ifndef INSTANCING_VK_GLSLLIB
+#define INSTANCING_VK_GLSLLIB
+
+layout(set = 0, binding = 0, std140) uniform GlobalMatrices {
+    mat4 g_WorldMatrix;
+    mat4 g_ViewMatrix;
+    mat4 g_ProjectionMatrix;
+    mat4 g_WorldViewMatrix;
+    mat4 g_WorldViewProjectionMatrix;
+    mat4 g_ViewProjectionMatrix;
+    mat3 g_NormalMatrix;
+    mat3 g_WorldNormalMatrix;
+};
+
+#if defined(INSTANCING)
+layout(location = 8) in mat4 inInstanceData;
+
+vec4 TransformWorld(vec4 position) {
+    mat4 worldMatrix = mat4(
+        vec4(inInstanceData[0].xyz, 0.0),
+        vec4(inInstanceData[1].xyz, 0.0),
+        vec4(inInstanceData[2].xyz, 0.0),
+        vec4(inInstanceData[3].xyz, 1.0)
+    );
+    return worldMatrix * position;
+}
+vec4 TransformWorldView(vec4 position) { return g_ViewMatrix * TransformWorld(position); }
+vec4 TransformWorldViewProjection(vec4 position) { return g_ViewProjectionMatrix * TransformWorld(position); }
+
+vec3 TransformWorldNormal(vec3 v) {
+    vec4 quat = vec4(inInstanceData[0].w, inInstanceData[1].w, inInstanceData[2].w, inInstanceData[3].w);
+    return v + vec3(2.0) * cross(cross(v, quat.xyz) + vec3(quat.w) * v, quat.xyz);
+}
+vec3 TransformNormal(vec3 v) { return (g_ViewMatrix * vec4(TransformWorldNormal(v), 0.0)).xyz; }
+
+#else
+vec4 TransformWorld(vec4 position) { return g_WorldMatrix * position; }
+vec4 TransformWorldView(vec4 position) { return g_WorldViewMatrix * position; }
+vec4 TransformWorldViewProjection(vec4 position) { return g_WorldViewProjectionMatrix * position; }
+vec3 TransformNormal(vec3 normal) { return g_NormalMatrix * normal; }
+vec3 TransformWorldNormal(vec3 normal) { return normalize(g_WorldNormalMatrix * normal); }
+#endif
+
+#endif

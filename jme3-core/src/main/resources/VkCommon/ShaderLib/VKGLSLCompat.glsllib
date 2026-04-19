@@ -1,0 +1,173 @@
+// ==========================================
+// 1. 精度与类型别名 (Precision & Aliases)
+// ==========================================
+#ifdef FRAGMENT_SHADER
+    #if defined(GL_ES) || defined(VULKAN)
+        precision highp float;
+        precision highp int;
+        precision highp sampler2DArray;
+        precision highp sampler2DShadow;
+        precision highp samplerCube;
+        precision highp sampler3D;
+        precision highp sampler2D;
+        #if defined(VULKAN) || __VERSION__ >= 310
+            precision highp sampler2DMS;
+        #endif
+    #endif
+#endif
+
+#if defined(GL_ES) || defined(VULKAN)
+#  define hfloat highp float
+#  define hvec2  highp vec2
+#  define hvec3  highp vec3
+#  define hvec4  highp vec4
+#  define lfloat lowp float
+#  define lvec2  lowp vec2
+#  define lvec3  lowp vec3
+#  define lvec4  lowp vec4
+#else
+#  define hfloat float
+#  define hvec2  vec2
+#  define hvec3  vec3
+#  define hvec4  vec4
+#  define lfloat float
+#  define lvec2  vec2
+#  define lvec3  vec3
+#  define lvec4  vec4
+#endif
+
+// ==========================================
+// 2. 核心语法分支 (严格区分 Vulkan 与 OpenGL)
+// ==========================================
+
+#ifdef VULKAN
+    // ------------------------------------------
+    // [分支 A] Vulkan 专属逻辑 (纯净隔离)
+    // ------------------------------------------
+    #define texture1D texture
+    #define texture2D texture
+    #define texture3D texture
+    #define textureCube texture
+    #define texture2DLod textureLod
+    #define textureCubeLod textureLod
+    #define texture2DArray texture
+
+    #if defined VERTEX_SHADER
+        #define varying out
+        #define attribute in
+    #elif defined FRAGMENT_SHADER
+        #define varying in
+        // Vulkan 强制要求明确的 location 绑定
+        layout( location = 0 ) out highp vec4 outFragColor;
+        #define gl_FragColor outFragColor
+    #endif
+
+#elif __VERSION__ >= 130
+    // ------------------------------------------
+    // [分支 B] 原生 OpenGL 130+ 逻辑 (原封不动)
+    // ------------------------------------------
+    #ifdef FRAGMENT_SHADER
+      #ifdef GL_ES
+        #ifdef BOUND_DRAW_BUFFER
+          #for i=0..15 ( #if $i<=BOUND_DRAW_BUFFER  $0 #endif ) 
+            #if BOUND_DRAW_BUFFER == $i
+              layout( location = $i ) out highp vec4 outFragColor;
+            #else
+              layout( location = $i ) out highp vec4 outNOP$i;
+            #endif
+          #endfor
+        #else
+          out highp vec4 outFragColor;
+        #endif
+      #else
+        out vec4 outFragColor;
+      #endif
+    #endif
+
+    #define texture1D texture
+    #define texture2D texture
+    #define texture3D texture
+    #define textureCube texture
+    #define texture2DLod textureLod
+    #define textureCubeLod textureLod
+    #define texture2DArray texture
+
+    #if defined VERTEX_SHADER
+      #define varying out
+      #define attribute in
+    #elif defined FRAGMENT_SHADER
+      #define varying in
+      #define gl_FragColor outFragColor
+    #endif
+
+#else
+    // ------------------------------------------
+    // [分支 C] 原生 OpenGL 110/100 逻辑 (原封不动)
+    // ------------------------------------------
+    #define isnan(val) !(val<0.0||val>0.0||val==0.0)
+#endif
+
+
+// ==========================================
+// 3. Vulkan 坐标系修正补丁 (Coordinate Fix)
+// ==========================================
+#if defined(VULKAN) && defined(VERTEX_SHADER)
+  // Vulkan 的 Y 轴方向与 OpenGL 相反，且 Z 轴深度为 [0, 1]
+  // 建议在所有 .vert 的 main() 结尾调用 fixVulkanPosition();
+  void fixVulkanPosition() {
+      gl_Position.y = -gl_Position.y;
+      gl_Position.z = (gl_Position.z + gl_Position.w) * 0.5;
+  }
+#else
+  // OpenGL 模式下为空宏，零损耗
+  #define fixVulkanPosition() 
+#endif
+
+
+// ==========================================
+// 4. 低版本 GLSL 数学函数 Polyfill 
+// ==========================================
+// 严格排查：如果是 Vulkan 模式，绝对不编译这些老旧函数
+
+#ifndef VULKAN
+
+    #if __VERSION__ == 110
+    mat3 mat3_sub(mat4 m) {
+      return mat3(m[0].xyz, m[1].xyz, m[2].xyz);
+    }
+    #else
+     #define mat3_sub mat3
+    #endif
+
+    #if __VERSION__ <= 140
+    float determinant(mat2 m) {
+      return m[0][0] * m[1][1] - m[1][0] * m[0][1];
+    }
+
+    float determinant(mat3 m) {
+      return  + m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+              - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+              + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    }
+    #endif
+
+    #if __VERSION__ <= 130
+    mat2 inverse(mat2 m) {
+      return mat2(m[1][1], -m[0][1], -m[1][0], m[0][0]) / determinant(m);
+    }
+
+    mat3 inverse(mat3 m) {
+      return mat3(
+        + (m[1][1] * m[2][2] - m[2][1] * m[1][2]),
+        - (m[1][0] * m[2][2] - m[2][0] * m[1][2]),
+        + (m[1][0] * m[2][1] - m[2][0] * m[1][1]),
+        - (m[0][1] * m[2][2] - m[2][1] * m[0][2]),
+        + (m[0][0] * m[2][2] - m[2][0] * m[0][2]),
+        - (m[0][0] * m[2][1] - m[2][0] * m[0][1]),
+        + (m[0][1] * m[1][2] - m[1][1] * m[0][2]),
+        - (m[0][0] * m[1][2] - m[1][0] * m[0][2]),
+        + (m[0][0] * m[1][1] - m[1][0] * m[0][1])) / determinant(m);
+    }
+    #endif
+
+#endif // end ifndef VULKAN

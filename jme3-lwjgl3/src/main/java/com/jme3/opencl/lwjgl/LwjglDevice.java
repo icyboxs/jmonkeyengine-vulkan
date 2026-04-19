@@ -64,12 +64,18 @@ public final class LwjglDevice implements Device {
 
     @Override
     public DeviceType getDeviceType() {
-        int type = Info.clGetDeviceInfoInt(device, CL10.CL_DEVICE_TYPE);
-        switch (type) {
-            case CL10.CL_DEVICE_TYPE_ACCELERATOR: return DeviceType.ACCELEARTOR;
-            case CL10.CL_DEVICE_TYPE_CPU: return DeviceType.CPU;
-            case CL10.CL_DEVICE_TYPE_GPU: return DeviceType.GPU;
-            default: return DeviceType.DEFAULT;
+        // 建议使用 Long 获取（如果 Info 类支持的话，不支持则保留你的 Int 方法）
+        long type = Info.clGetDeviceInfoLong(device, CL10.CL_DEVICE_TYPE);
+        
+        // 使用按位与 (&) 判断是否包含该类型的标志位
+        if ((type & CL10.CL_DEVICE_TYPE_ACCELERATOR) != 0) {
+            return DeviceType.ACCELEARTOR; // 保留了你原代码中的拼写
+        } else if ((type & CL10.CL_DEVICE_TYPE_GPU) != 0) {
+            return DeviceType.GPU;
+        } else if ((type & CL10.CL_DEVICE_TYPE_CPU) != 0) {
+            return DeviceType.CPU;
+        } else {
+            return DeviceType.DEFAULT;
         }
     }
 

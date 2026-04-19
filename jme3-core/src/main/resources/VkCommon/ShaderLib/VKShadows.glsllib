@@ -1,0 +1,72 @@
+// VKShadows.glsllib (function lib)
+// 要求: #version 450 在主shader中声明
+
+// ---------- Vulkan path: no legacy version branching ----------
+#define IVEC2 ivec2
+
+#ifdef HARDWARE_SHADOWS
+    #define SHADOWMAP sampler2DShadow
+    #define SHADOWCOMPAREOFFSET(tex,coord,offset) textureProjOffset(tex, coord, offset)
+    #define SHADOWCOMPARE(tex,coord) textureProj(tex, coord)
+    #define SHADOWGATHER(tex,coord) textureGather(tex, coord.xy, coord.z)
+#else
+    #define SHADOWMAP sampler2D
+    #define SHADOWCOMPAREOFFSET(tex,coord,offset) step((coord).z, textureProjOffset(tex, coord, offset).r)
+    #define SHADOWCOMPARE(tex,coord) step((coord).z, textureProj(tex, coord).r)
+    #define SHADOWGATHER(tex,coord) step((coord).z, textureGather(tex, coord.xy))
+#endif
+
+#if FILTER_MODE == 10
+    #define GETSHADOW Shadow_Nearest
+    #define KERNEL 1.0
+#elif FILTER_MODE == 1
+    #ifdef HARDWARE_SHADOWS
+        #define GETSHADOW Shadow_Nearest
+    #else
+        #define GETSHADOW Shadow_DoBilinear_2x2
+    #endif
+    #define KERNEL 1.0
+#elif FILTER_MODE == 2
+    #define GETSHADOW Shadow_DoDither_2x2
+    #define KERNEL 1.0
+#elif FILTER_MODE == 3
+    #define GETSHADOW Shadow_DoPCF
+    #define KERNEL 4.0
+#elif FILTER_MODE == 4
+    #define GETSHADOW Shadow_DoPCFPoisson
+    #define KERNEL 4.0
+#elif FILTER_MODE == 5
+    #define GETSHADOW Shadow_DoPCF
+    #define KERNEL 8.0
+#endif
+
+// ---------- descriptors ----------
+layout(set = 3, binding = 0) uniform SHADOWMAP m_ShadowMap0;
+layout(set = 3, binding = 1) uniform SHADOWMAP m_ShadowMap1;
+layout(set = 3, binding = 2) uniform SHADOWMAP m_ShadowMap2;
+layout(set = 3, binding = 3) uniform SHADOWMAP m_ShadowMap3;
+#ifdef POINTLIGHT
+layout(set = 3, binding = 4) uniform SHADOWMAP m_ShadowMap4;
+layout(set = 3, binding = 5) uniform SHADOWMAP m_ShadowMap5;
+#endif
+
+layout(set = 3, binding = 6) uniform ShadowParams {
+#ifdef PSSM
+    vec4 m_Splits;
+#endif
+    float m_ShadowIntensity;
+};
+
+const vec2 pixSize2 = vec2(1.0 / SHADOWMAP_SIZE);
+float shadowBorderScale = 1.0;
+
+float Shadow_DoShadowCompare(in SHADOWMAP tex, in vec4 projCoord){
+    return SHADOWCOMPARE(tex, projCoord);
+}
+
+float Shadow_BorderCheck(in vec2 coord){
+    // Vulkan里不需要 GL_ES 分支
+    vec4 t = vec4(coord.xy, 0.0, 1.0);
+    t = step(t.wwxy, t.xyzz);
+    return dot(t, t);
+}
