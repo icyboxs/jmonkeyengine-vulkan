@@ -33,9 +33,9 @@ import java.util.logging.Logger;
 /**
  * @author icyboxs
  */
-public final class LwjglVKRenderer implements VKRenderer, VkCommandRecorder {
+public final class VKRenderer implements Renderer, VkCommandRecorder {
 
-    private static final Logger LOGGER = Logger.getLogger(LwjglVKRenderer.class.getName());
+    private static final Logger LOGGER = Logger.getLogger(VKRenderer.class.getName());
 
     private final VulkanRuntime runtime;
 
@@ -53,7 +53,7 @@ public final class LwjglVKRenderer implements VKRenderer, VkCommandRecorder {
     private DrawExecutor drawExecutor;
     private DefaultFrameRecorder frameRecorder;
 
-    public LwjglVKRenderer(VulkanRuntime runtime) {
+    public VKRenderer(VulkanRuntime runtime) {
         this.runtime = runtime;
     }
 
@@ -189,7 +189,7 @@ public final class LwjglVKRenderer implements VKRenderer, VkCommandRecorder {
         initialized = false;
     }
 
-    @Override
+
     public void discardPendingDraws() {
         drawQueue.clear();
     }
@@ -205,18 +205,6 @@ public final class LwjglVKRenderer implements VKRenderer, VkCommandRecorder {
     @Override public void setFrameBuffer(FrameBuffer fb) { stateTracker.setFrameBuffer(fb); }
     @Override public FrameBuffer getCurrentFrameBuffer() { return stateTracker.getCurrentFb(); }
     @Override public void setTexture(int unit, Texture tex) throws TextureUnitException { stateTracker.setTexture(unit, tex); }
-    
-    @Override
-    public void setExtraTexture(Texture tex) { stateTracker.setExtraTexture(tex); }
-    
-    @Override
-    public void clearTextureUnits() { stateTracker.clearTextureUnits(); }
-    
-    @Override
-    public void setViewProjectionMatrices(com.jme3.math.Matrix4f viewMatrix, com.jme3.math.Matrix4f projMatrix) { stateTracker.setViewProjectionMatrices(viewMatrix, projMatrix); }
-    
-    @Override
-    public void setCurrentMaterial(Material material) { stateTracker.setCurrentMaterial(material); }
 
     // --- 空实现或未支持的方法 ---
     @Override public void invalidateState() {}

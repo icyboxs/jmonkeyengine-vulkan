@@ -459,7 +459,8 @@ public enum Caps {
     /**
      * Supports debugging capabilities
      */
-    GLDebug
+    GLDebug,
+    Vulkan
     ;
 
     /**

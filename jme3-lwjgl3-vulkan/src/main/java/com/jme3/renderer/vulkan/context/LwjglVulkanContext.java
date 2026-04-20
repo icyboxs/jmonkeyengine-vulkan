@@ -4,7 +4,6 @@ import com.jme3.input.lwjgl.GlfwKeyInput;
 import com.jme3.input.lwjgl.GlfwMouseInput;
 import com.jme3.math.Vector2f;
 import com.jme3.renderer.Renderer;
-import com.jme3.renderer.vulkan.LwjglVKRenderer;
 import com.jme3.renderer.vulkan.VKRenderer;
 import com.jme3.renderer.vulkan.VulkanRuntime;
 import com.jme3.system.AppSettings;
@@ -39,7 +38,7 @@ public class LwjglVulkanContext extends LwjglWindow {
 
     private SystemListener engine;
     private VulkanRuntime runtime;
-    private LwjglVKRenderer renderer;
+    private VKRenderer renderer;
     private Timer timer;
     private Thread renderThread;
 
@@ -64,7 +63,7 @@ public class LwjglVulkanContext extends LwjglWindow {
         destroyed.set(false);
 
         runtime = new VulkanRuntime(settings);
-        renderer = new LwjglVKRenderer(runtime);
+        renderer = new VKRenderer(runtime);
         timer = getTimer();
 
         try {
