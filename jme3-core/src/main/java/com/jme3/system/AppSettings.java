@@ -211,7 +211,7 @@ public final class AppSettings extends HashMap<String, Object> {
      * @see AppSettings#setRenderer(java.lang.String)
      */
     public static final String LWJGL_OPENGL45 = "LWJGL-OpenGL45";
-
+    public static final String LWJGL_VULKAN = "LWJGL-Vulkan";
     /**
      * Use the LWJGL OpenAL based renderer for audio capabilities.
      *

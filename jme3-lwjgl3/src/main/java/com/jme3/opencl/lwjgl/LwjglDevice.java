@@ -64,16 +64,16 @@ public final class LwjglDevice implements Device {
 
     @Override
     public DeviceType getDeviceType() {
-        // 建议使用 Long 获取（如果 Info 类支持的话，不支持则保留你的 Int 方法）
+        // 必须使用 Long 读取，因为 cl_device_type 是 64 位的
         long type = Info.clGetDeviceInfoLong(device, CL10.CL_DEVICE_TYPE);
         
-        // 使用按位与 (&) 判断是否包含该类型的标志位
-        if ((type & CL10.CL_DEVICE_TYPE_ACCELERATOR) != 0) {
-            return DeviceType.ACCELEARTOR; // 保留了你原代码中的拼写
-        } else if ((type & CL10.CL_DEVICE_TYPE_GPU) != 0) {
-            return DeviceType.GPU;
-        } else if ((type & CL10.CL_DEVICE_TYPE_CPU) != 0) {
+        // Java 的 switch 不支持 long 类型，替换为 if-else 结构
+        if (type == CL10.CL_DEVICE_TYPE_ACCELERATOR) {
+            return DeviceType.ACCELEARTOR; // 保持你原有的枚举拼写
+        } else if (type == CL10.CL_DEVICE_TYPE_CPU) {
             return DeviceType.CPU;
+        } else if (type == CL10.CL_DEVICE_TYPE_GPU) {
+            return DeviceType.GPU;
         } else {
             return DeviceType.DEFAULT;
         }

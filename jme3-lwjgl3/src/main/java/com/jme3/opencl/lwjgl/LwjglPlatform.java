@@ -46,10 +46,10 @@ import org.lwjgl.opencl.CL10;
  * @author shaman
  */
 public final class LwjglPlatform implements Platform {
-
+    
     final long platform;
     List<LwjglDevice> devices;
-
+    
     public LwjglPlatform(long platform) {
         this.platform = platform;
     }
@@ -57,23 +57,23 @@ public final class LwjglPlatform implements Platform {
     public long getPlatform() {
         return platform;
     }
-
+    
     @Override
     public List<LwjglDevice> getDevices() {
         if (devices == null) {
             devices = new ArrayList<>();
-            // 在这里加上 (int) 强制转换
+            // 加上 (int) 强制转换
             for (long d : getDevices((int) CL10.CL_DEVICE_TYPE_ALL)) {
                 devices.add(new LwjglDevice(d, this));
             }
         }
         return devices;
     }
-
+    
     /**
      * Returns a list of the available devices on this platform that match the
      * specified type, filtered by the specified filter.
-     *
+     * 
      * Copied from the old release.
      *
      * @param deviceType the device type
