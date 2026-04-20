@@ -1,0 +1,114 @@
+dependencies {
+    // 保留原有的核心与桌面模块
+    api project(':jme3-core')
+    api project(':jme3-desktop')
+    api project(':jme3-lwjgl3')
+    api (libs.lwjgl3.awt) {
+        exclude group: 'org.lwjgl', module: 'lwjgl'
+    }
+
+	// 基础与输入
+    api libs.lwjgl3.base
+    api libs.lwjgl3.glfw
+    api libs.lwjgl3.jemalloc
+    
+    // 保留 OpenAL 和 OpenCL
+    api libs.lwjgl3.openal
+    api libs.lwjgl3.opencl
+
+    // Vulkan 核心
+    api libs.lwjgl3.vulkan
+    api libs.lwjgl3.shaderc
+    api libs.lwjgl3.spvc
+    api libs.lwjgl3.vma
+
+
+    // Base Natives
+    runtimeOnly(variantOf(libs.lwjgl3.base){ classifier('natives-windows') })
+    runtimeOnly(variantOf(libs.lwjgl3.base){ classifier('natives-windows-x86') })
+    runtimeOnly(variantOf(libs.lwjgl3.base){ classifier('natives-linux') })
+    runtimeOnly(variantOf(libs.lwjgl3.base){ classifier('natives-linux-arm32') })
+    runtimeOnly(variantOf(libs.lwjgl3.base){ classifier('natives-linux-arm64') })
+    runtimeOnly(variantOf(libs.lwjgl3.base){ classifier('natives-macos') })
+    runtimeOnly(variantOf(libs.lwjgl3.base){ classifier('natives-macos-arm64') })
+
+    // GLFW Natives
+    runtimeOnly(variantOf(libs.lwjgl3.glfw){ classifier('natives-windows') })
+    runtimeOnly(variantOf(libs.lwjgl3.glfw){ classifier('natives-windows-x86') })
+    runtimeOnly(variantOf(libs.lwjgl3.glfw){ classifier('natives-linux') })
+    runtimeOnly(variantOf(libs.lwjgl3.glfw){ classifier('natives-linux-arm32') })
+    runtimeOnly(variantOf(libs.lwjgl3.glfw){ classifier('natives-linux-arm64') })
+    runtimeOnly(variantOf(libs.lwjgl3.glfw){ classifier('natives-macos') })
+    runtimeOnly(variantOf(libs.lwjgl3.glfw){ classifier('natives-macos-arm64') })
+
+    // Jemalloc Natives
+    runtimeOnly(variantOf(libs.lwjgl3.jemalloc){ classifier('natives-windows') })
+    runtimeOnly(variantOf(libs.lwjgl3.jemalloc){ classifier('natives-windows-x86') })
+    runtimeOnly(variantOf(libs.lwjgl3.jemalloc){ classifier('natives-linux') })
+    runtimeOnly(variantOf(libs.lwjgl3.jemalloc){ classifier('natives-linux-arm32') })
+    runtimeOnly(variantOf(libs.lwjgl3.jemalloc){ classifier('natives-linux-arm64') })
+    runtimeOnly(variantOf(libs.lwjgl3.jemalloc){ classifier('natives-macos') })
+    runtimeOnly(variantOf(libs.lwjgl3.jemalloc){ classifier('natives-macos-arm64') })
+
+    // OpenGL Natives
+    runtimeOnly(variantOf(libs.lwjgl3.opengl){ classifier('natives-windows') })
+    runtimeOnly(variantOf(libs.lwjgl3.opengl){ classifier('natives-windows-x86') })
+    runtimeOnly(variantOf(libs.lwjgl3.opengl){ classifier('natives-linux') })
+    runtimeOnly(variantOf(libs.lwjgl3.opengl){ classifier('natives-linux-arm32') })
+    runtimeOnly(variantOf(libs.lwjgl3.opengl){ classifier('natives-linux-arm64') })
+    runtimeOnly(variantOf(libs.lwjgl3.opengl){ classifier('natives-macos') })
+    runtimeOnly(variantOf(libs.lwjgl3.opengl){ classifier('natives-macos-arm64') })
+
+    // OpenAL Natives
+    runtimeOnly(variantOf(libs.lwjgl3.openal){ classifier('natives-windows') })
+    runtimeOnly(variantOf(libs.lwjgl3.openal){ classifier('natives-windows-x86') })
+    runtimeOnly(variantOf(libs.lwjgl3.openal){ classifier('natives-linux') })
+    runtimeOnly(variantOf(libs.lwjgl3.openal){ classifier('natives-linux-arm32') })
+    runtimeOnly(variantOf(libs.lwjgl3.openal){ classifier('natives-linux-arm64') })
+    runtimeOnly(variantOf(libs.lwjgl3.openal){ classifier('natives-macos') })
+    runtimeOnly(variantOf(libs.lwjgl3.openal){ classifier('natives-macos-arm64') })
+
+    // === 新增：Vulkan 相关模块的 Natives ===
+    
+    // Vulkan (LWJGL 的 Vulkan 通常只需要 macOS 的 MoltenVK)
+    runtimeOnly(variantOf(libs.lwjgl3.vulkan){ classifier('natives-macos') })
+    
+    // Shaderc Natives
+    runtimeOnly(variantOf(libs.lwjgl3.shaderc){ classifier('natives-windows') })
+    runtimeOnly(variantOf(libs.lwjgl3.shaderc){ classifier('natives-windows-x86') })
+    runtimeOnly(variantOf(libs.lwjgl3.shaderc){ classifier('natives-linux') })
+    runtimeOnly(variantOf(libs.lwjgl3.shaderc){ classifier('natives-linux-arm32') })
+    runtimeOnly(variantOf(libs.lwjgl3.shaderc){ classifier('natives-linux-arm64') })
+    runtimeOnly(variantOf(libs.lwjgl3.shaderc){ classifier('natives-macos') })
+    runtimeOnly(variantOf(libs.lwjgl3.shaderc){ classifier('natives-macos-arm64') })
+    
+    // SPVC Natives
+    runtimeOnly(variantOf(libs.lwjgl3.spvc){ classifier('natives-windows') })
+    runtimeOnly(variantOf(libs.lwjgl3.spvc){ classifier('natives-windows-x86') })
+    runtimeOnly(variantOf(libs.lwjgl3.spvc){ classifier('natives-linux') })
+    runtimeOnly(variantOf(libs.lwjgl3.spvc){ classifier('natives-linux-arm32') })
+    runtimeOnly(variantOf(libs.lwjgl3.spvc){ classifier('natives-linux-arm64') })
+    runtimeOnly(variantOf(libs.lwjgl3.spvc){ classifier('natives-macos') })
+    runtimeOnly(variantOf(libs.lwjgl3.spvc){ classifier('natives-macos-arm64') })
+    
+    // VMA Natives
+    runtimeOnly(variantOf(libs.lwjgl3.vma){ classifier('natives-windows') })
+    runtimeOnly(variantOf(libs.lwjgl3.vma){ classifier('natives-windows-x86') })
+    runtimeOnly(variantOf(libs.lwjgl3.vma){ classifier('natives-linux') })
+    runtimeOnly(variantOf(libs.lwjgl3.vma){ classifier('natives-linux-arm32') })
+    runtimeOnly(variantOf(libs.lwjgl3.vma){ classifier('natives-linux-arm64') })
+    runtimeOnly(variantOf(libs.lwjgl3.vma){ classifier('natives-macos') })
+    runtimeOnly(variantOf(libs.lwjgl3.vma){ classifier('natives-macos-arm64') })
+}
+
+javadoc {
+    // Disable doclint for JDK8+.
+    if (JavaVersion.current().isJava8Compatible()){
+        options.addStringOption('Xdoclint:none', '-quiet')
+    }
+}
+
+// === 新增：与第二段代码对齐的打包配置 ===
+jar {
+    exclude '**/*.exe'
+}
