@@ -143,8 +143,7 @@ public final class VulkanDescriptors {
     public void writePerDraw(
             int frameIndex,
             int dynamicOffsetWithinFrame,
-            com.jme3.math.Matrix4f wvp,
-            ColorRGBA color,
+            float[] uboData, // 【修改点】：直接接收拍平好的纯二进制浮点数组
             int fbWidth,
             int fbHeight,
             float timeSeconds,
@@ -171,25 +170,16 @@ public final class VulkanDescriptors {
         }
 
         long base = frameBaseBytes(frameIndex) + (long) dynamicOffsetWithinFrame;
-        long mapped = uboMappedPointer + base;
+        long mapped = uboMappedPointer + frameBaseBytes(frameIndex) + (long) dynamicOffsetWithinFrame;
 
-        if (layout.offWvp >= 0 && wvp != null) {
-            wvp.get(tmpMat16, false);
-            long dst = mapped + layout.offWvp;
-            for (int i = 0; i < 16; i++) {
-                memPutFloat(dst + i * 4L, tmpMat16[i]);
-            }
+        // 【极速批处理】：利用 NIO 视图实现一次性 JNI bulk-copy 写入
+        if (uboData != null) {
+            int floatCount = layout.sliceSize / 4;
+            java.nio.FloatBuffer dstFb = org.lwjgl.system.MemoryUtil.memFloatBuffer(mapped, floatCount);
+            dstFb.put(uboData, 0, Math.min(uboData.length, floatCount));
         }
 
-        if (layout.offColor >= 0) {
-            ColorRGBA c = (color != null) ? color : ColorRGBA.White;
-            long dst = mapped + layout.offColor;
-            memPutFloat(dst, c.r);
-            memPutFloat(dst + 4, c.g);
-            memPutFloat(dst + 8, c.b);
-            memPutFloat(dst + 12, c.a);
-        }
-
+        // 2. 补漏机制：针对每帧刷新的全局系统数据
         if (layout.offResolution >= 0) {
             long dst = mapped + layout.offResolution;
             memPutFloat(dst, (float) fbWidth);
@@ -205,10 +195,6 @@ public final class VulkanDescriptors {
             memPutFloat(dst + 8, 0f);
             memPutFloat(dst + 12, 0f);
         }
-
-        // [VMA 修改]: 显式同步刚刚写入的内存区域。
-        // 保障在非 HOST_COHERENT 内存上，GPU 能够即刻看到最新的 UBO 数据。
-        //vmaFlushAllocation(vk.vmaAllocator(), ubo.memory, base, layout.sliceSize);
     }
 
     private void checkFrameIndex(int frameIndex) {

@@ -67,8 +67,8 @@ public final class VulkanTextureManager {
         }
 
         int vkFormat;
+        boolean swizzleABGR = false;
         ByteBuffer pixels;
-
         // --- 核心：处理 jME3 到 Vulkan 的格式映射与转换 ---
         Image.Format fmt = img.getFormat();
         switch (fmt) {
@@ -77,19 +77,17 @@ public final class VulkanTextureManager {
                 pixels = data.duplicate();
                 pixels.position(0).limit(w * h * 4);
                 break;
-
             case ABGR8:
-                // jME 的 ABGR8 在内存通常是 A,B,G,R。为了修复发红，转为 R,G,B,A
+                // 【解放 CPU】：数据原样上传，标记底层 Swizzle
                 vkFormat = VK_FORMAT_R8G8B8A8_UNORM;
-                pixels = convertABGR8ToRGBA8(data, w * h);
+                pixels = data.duplicate();
+                pixels.position(0).limit(w * h * 4);
+                swizzleABGR = true;
                 break;
-
-            case RGB8:
-                // Vulkan 不原生支持 24位，补全 A 频道
+            case RGB8: // 此处由于 24 位不对齐，只能保留转换
                 vkFormat = VK_FORMAT_R8G8B8A8_UNORM;
                 pixels = convert24BitToRGBA8(data, w * h, false);
                 break;
-
             case BGR8:
                 // 解决发红：原数据 B,G,R -> 转为 R,G,B,A
                 vkFormat = VK_FORMAT_R8G8B8A8_UNORM;
@@ -113,7 +111,7 @@ public final class VulkanTextureManager {
         }
 
         // 修改：假设 rf.createTexture2DFromBuffer 现在接受 vkFormat 参数
-        VkTexture vkTex = rf.createTexture2DFromBuffer(pixels, w, h, vkFormat);
+        VkTexture vkTex = rf.createTexture2DFromBuffer(pixels, w, h, vkFormat, swizzleABGR);
         textureCache.put(tex, vkTex);
         return vkTex;
     }

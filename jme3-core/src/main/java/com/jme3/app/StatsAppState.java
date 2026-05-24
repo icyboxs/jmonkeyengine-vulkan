@@ -196,7 +196,7 @@ public class StatsAppState extends AbstractAppState {
     }
 
     public void loadDarken() {
-        Material mat = new Material(app.getAssetManager(), "Common/MatDefs/Misc/Unshaded.j3md");
+        Material mat = new Material(app.getAssetManager(), "VkCommon/MatDefs/Misc/VKUnshaded.j3md");
         mat.setColor("Color", new ColorRGBA(0, 0, 0, 0.5f));
         mat.getAdditionalRenderState().setBlendMode(BlendMode.Alpha);
 
@@ -237,7 +237,7 @@ public class StatsAppState extends AbstractAppState {
         if (showFps) {
             secondCounter += app.getTimer().getTimePerFrame();
             frameCounter++;
-            if (secondCounter >= 1.0f) {
+            if (secondCounter >= 0.5f) {
                 int fps = (int) (frameCounter / secondCounter);
                 fpsText.setText("Frames per second: " + fps);
                 secondCounter = 0.0f;

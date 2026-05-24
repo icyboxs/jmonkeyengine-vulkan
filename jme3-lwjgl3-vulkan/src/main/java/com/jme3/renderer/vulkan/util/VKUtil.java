@@ -70,8 +70,8 @@ public class VKUtil {
         shaderc_compile_options_set_target_spirv(options, shaderc_spirv_version_1_4);
         shaderc_compile_options_set_optimization_level(options, shaderc_optimization_level_performance);
 
-        shaderc_compile_options_set_auto_map_locations(options, true);
-        shaderc_compile_options_set_auto_bind_uniforms(options, true);
+//        shaderc_compile_options_set_auto_map_locations(options, true);
+//        shaderc_compile_options_set_auto_bind_uniforms(options, true);
 
         shaderc_compile_options_set_include_callbacks(options,
                 resolver = new ShadercIncludeResolve() {

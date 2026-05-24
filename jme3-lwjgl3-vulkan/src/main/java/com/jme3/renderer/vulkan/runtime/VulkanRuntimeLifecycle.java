@@ -32,7 +32,6 @@ public final class VulkanRuntimeLifecycle {
         this.owner = owner;
         this.s = s;
         this.log = log;
-        // [修改]: 读取 AppSettings 中的 GraphicsDebug 设置
         this.debug = s.settings.isGraphicsDebug(); 
     }
 
@@ -123,7 +122,8 @@ public final class VulkanRuntimeLifecycle {
         ByteBuffer white = memAlloc(4);
         try {
             white.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255).flip();
-            s.whiteTex = s.rf.createTexture2DFromBuffer(white, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
+            // 【编译修复】：末尾传入 false，表示纯白占位贴图不需要做 ABGR 翻转
+            s.whiteTex = s.rf.createTexture2DFromBuffer(white, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, false);
         } finally {
             memFree(white);
         }
@@ -141,7 +141,7 @@ public final class VulkanRuntimeLifecycle {
         s.descriptors.init(s.whiteTex);
         s.descriptors.setPerDrawAlignment(owner.getMinUniformBufferOffsetAlignment());
 
-        s.materialDesc = new VulkanMaterialDescriptors(vk(), 4096, s.stats);
+        s.materialDesc = new VulkanMaterialDescriptors(s.vk, 4096, s.stats);
         s.materialDesc.init();
 
         s.materialManager = new VulkanMaterialManager(
@@ -174,7 +174,6 @@ public final class VulkanRuntimeLifecycle {
     }
 
     private void initRenderTargetsAndFrameDriver() {
-        // [修改]: 读取 AppSettings 中的 isVSync 并传递给 RenderTargetManager
         s.renderTargetManager = new VulkanRenderTargetManager(s.vk, s.rf, s.settings.isVSync());
         s.renderTargetManager.init(s.window.fbWidth(), s.window.fbHeight());
 
@@ -220,7 +219,6 @@ public final class VulkanRuntimeLifecycle {
             s.deferredReleaseQueue.flushAll();
             s.deferredReleaseQueue = null;
         }
-
     }
 
     private void cleanupFrameAndTargets() {

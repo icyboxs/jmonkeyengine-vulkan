@@ -20,23 +20,12 @@ import static org.lwjgl.system.MemoryUtil.*;
 import static org.lwjgl.util.vma.Vma.*;
 import static org.lwjgl.vulkan.VK10.*;
 
-/**
- * VkResourceFactory：资源创建/销毁的工厂类。
- *
- * 功能：集中管理Vulkan资源的创建和销毁 原理：引入 VMA (Vulkan Memory Allocator) 接管底层物理内存分配，避免触碰
- * maxMemoryAllocationCount 限制。 优化：引入 Batch 机制，避免批量加载贴图时频繁同步导致管线气泡。
- */
 public final class VkResourceFactory {
 
     private static final Logger LOGGER = Logger.getLogger(VkResourceFactory.class.getName());
 
     private final VkContext vk;
-
     private long transferCommandPool;
-
-    // =========================================================================
-    // 批量传输 (Batch Transfer) 状态追踪
-    // =========================================================================
     private VkCommandBuffer activeBatchCmd = null;
     private final List<VkBuffer> pendingStagingBuffers = new ArrayList<>();
 
@@ -44,9 +33,6 @@ public final class VkResourceFactory {
         this.vk = vk;
     }
 
-    /**
-     * 开启批量传输模式。 调用此方法后，所有的资源拷贝指令将被录制到同一个 CommandBuffer 中，不会立即阻塞 CPU。
-     */
     public void beginTransferBatch() {
         if (activeBatchCmd != null) {
             throw new IllegalStateException("A transfer batch is already in progress.");
@@ -54,19 +40,13 @@ public final class VkResourceFactory {
         activeBatchCmd = beginSingleTimeCommands();
     }
 
-    /**
-     * 结束批量传输模式，一次性提交所有积压的拷贝指令，并阻塞等待 GPU 完成。 只有在这里才能安全地销毁积压的暂存缓冲。
-     */
     public void endTransferBatch() {
         if (activeBatchCmd == null) {
             throw new IllegalStateException("No transfer batch in progress.");
         }
-
-        // 1. 提交命令并等待 GPU 执行完毕
         endSingleTimeCommands(activeBatchCmd);
         activeBatchCmd = null;
 
-        // 2. 此时 GPU 已经读取完数据，可以安全地销毁所有相关的暂存缓冲
         for (VkBuffer stagingBuffer : pendingStagingBuffers) {
             destroyBuffer(stagingBuffer);
         }
@@ -83,7 +63,7 @@ public final class VkResourceFactory {
         }
     }
 
-    private void deferOrDestroyStagingBuffer(VkBuffer stagingBuffer) {
+    public void destroyStagingBuffer(VkBuffer stagingBuffer) {
         if (activeBatchCmd != null) {
             pendingStagingBuffers.add(stagingBuffer);
         } else {
@@ -91,9 +71,6 @@ public final class VkResourceFactory {
         }
     }
 
-    /**
-     * 创建一个 VkBuffer 并使用 VMA 分配和绑定内存。
-     */
     public VkBuffer createBuffer(long size, int usage, int properties) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkBufferCreateInfo ci = VkBufferCreateInfo.calloc(stack)
@@ -101,17 +78,12 @@ public final class VkResourceFactory {
                     .size(size)
                     .usage(usage);
 
-            // VMA 内存分配策略配置
             VmaAllocationCreateInfo allocInfo = VmaAllocationCreateInfo.calloc(stack);
+            boolean isHostVisible = (properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0;
 
-            if ((properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+            if (isHostVisible) {
                 allocInfo.usage(VMA_MEMORY_USAGE_AUTO_PREFER_HOST);
-                // 允许 CPU 顺序写入并尝试自动映射内存
                 allocInfo.flags(VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
-
-                LOGGER.fine(String.format(
-                        "[Vulkan-VMA] createBuffer size=%d usage=0x%X -> AUTO_PREFER_HOST (Host Visible)", size, usage
-                ));
             } else {
                 allocInfo.usage(VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
             }
@@ -119,7 +91,6 @@ public final class VkResourceFactory {
             LongBuffer pBuffer = stack.mallocLong(1);
             PointerBuffer pAllocation = stack.mallocPointer(1);
 
-            // VMA 一键创建 Buffer 并绑定分配的内存块
             int err = vmaCreateBuffer(vk.vmaAllocator(), ci, allocInfo, pBuffer, pAllocation, null);
             if (err != VK_SUCCESS) {
                 throw new RuntimeException("vmaCreateBuffer failed: " + err);
@@ -127,18 +98,15 @@ public final class VkResourceFactory {
 
             VkBuffer b = new VkBuffer();
             b.handle = pBuffer.get(0);
-            b.memory = pAllocation.get(0); // 存储 VmaAllocation 句柄
+            b.memory = pAllocation.get(0);
+            b.capacity = size;             
+            b.isHostVisible = isHostVisible; 
             return b;
         }
     }
 
-    /**
-     * 销毁 buffer 与其 VMA 内存分配。
-     */
     public void destroyBuffer(VkBuffer b) {
-        if (b == null) {
-            return;
-        }
+        if (b == null) return;
         if (b.handle != 0 && b.memory != 0) {
             vmaDestroyBuffer(vk.vmaAllocator(), b.handle, b.memory);
         }
@@ -146,89 +114,70 @@ public final class VkResourceFactory {
         b.memory = 0;
     }
 
-    /**
-     * 创建一个 2D image view。 (保持原样，View不涉及内存分配)
-     */
-    public long createImageView(long image, int format, int aspect) {
+    public long createImageView(long image, int format, int aspect, boolean swizzleABGR) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkImageViewCreateInfo ci = VkImageViewCreateInfo.calloc(stack)
-                    .sType$Default()
-                    .image(image)
-                    .viewType(VK_IMAGE_VIEW_TYPE_2D)
-                    .format(format);
+                    .sType$Default().image(image).viewType(VK_IMAGE_VIEW_TYPE_2D).format(format);
 
-            ci.subresourceRange()
-                    .aspectMask(aspect)
-                    .levelCount(1)
-                    .layerCount(1);
+            // =========================================================
+            // 【核心修正】：正确映射 JME3 的 ABGR8 内存顺序到 Shader RGBA 
+            // 内存：[A, B, G, R]
+            // 当作 R8G8B8A8 加载后：Vulkan R = A, G = B, B = G, A = R
+            // =========================================================
+            if (swizzleABGR) {
+                ci.components(c -> c
+                        .r(VK_COMPONENT_SWIZZLE_A) // Shader.r 读取底层的 R 通道 (也就是真实像素的 R)
+                        .g(VK_COMPONENT_SWIZZLE_B) // Shader.g 读取底层的 G 通道 (也就是真实像素的 G)
+                        .b(VK_COMPONENT_SWIZZLE_G) // Shader.b 读取底层的 B 通道 (也就是真实像素的 B)
+                        .a(VK_COMPONENT_SWIZZLE_R) // Shader.a 读取底层的 A 通道 (也就是真实像素的 A)
+                );
+            } else {
+                ci.components(c -> c
+                        .r(VK_COMPONENT_SWIZZLE_IDENTITY)
+                        .g(VK_COMPONENT_SWIZZLE_IDENTITY)
+                        .b(VK_COMPONENT_SWIZZLE_IDENTITY)
+                        .a(VK_COMPONENT_SWIZZLE_IDENTITY)
+                );
+            }
+            ci.subresourceRange().aspectMask(aspect).levelCount(1).layerCount(1);
 
             LongBuffer pV = stack.mallocLong(1);
-            int err = vkCreateImageView(vk.device(), ci, null, pV);
-            if (err != VK_SUCCESS) {
-                throw new RuntimeException("vkCreateImageView failed: " + err);
-            }
+            vkCreateImageView(vk.device(), ci, null, pV);
             return pV.get(0);
         }
     }
 
-    /**
-     * 创建 depth resource（image + memory + view）。
-     */
+    public long createImageView(long image, int format, int aspect) {
+        return createImageView(image, format, aspect, false);
+    }
+
     public VkDepthResources createDepth(int w, int h, int depthFormat) {
-        VkImageAlloc img = createImage2D(
-                w, h, depthFormat, VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-        );
-
+        VkImageAlloc img = createImage2D(w, h, depthFormat, VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         long view = createImageView(img.image, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
-
         VkDepthResources d = new VkDepthResources();
-        d.image = img.image;
-        d.memory = img.memory;
-        d.view = view;
+        d.image = img.image; d.memory = img.memory; d.view = view;
         return d;
     }
 
-    /**
-     * 销毁 depth 资源（view -> VMA Image）
-     */
     public void destroyDepth(VkDepthResources d) {
-        if (d == null) {
-            return;
-        }
-        if (d.view != 0) {
-            vkDestroyImageView(vk.device(), d.view, null);
-        }
-        if (d.image != 0 && d.memory != 0) {
-            vmaDestroyImage(vk.vmaAllocator(), d.image, d.memory);
-        }
+        if (d == null) return;
+        if (d.view != 0) vkDestroyImageView(vk.device(), d.view, null);
+        if (d.image != 0 && d.memory != 0) vmaDestroyImage(vk.vmaAllocator(), d.image, d.memory);
         d.view = d.image = d.memory = 0;
     }
 
-    /**
-     * 把 ByteBuffer 数据写入到 VMA 内存中。 注意：这里的 deviceMemory 参数实际上是 VmaAllocation 句柄。
-     */
     public void writeToMemory(long vmaAllocation, ByteBuffer src) {
         PointerBuffer p = memAllocPointer(1);
-        int err = vmaMapMemory(vk.vmaAllocator(), vmaAllocation, p);
-        if (err != VK_SUCCESS) {
-            throw new RuntimeException("vmaMapMemory failed: " + err);
-        }
+        vmaMapMemory(vk.vmaAllocator(), vmaAllocation, p);
         memCopy(memAddress(src), p.get(0), src.remaining());
         vmaUnmapMemory(vk.vmaAllocator(), vmaAllocation);
         memFree(p);
     }
 
-    /**
-     * 把不同类型的 Buffer 写入 VMA 内存中。
-     */
     public void writeToMemory(long vmaAllocation, Buffer src, int byteSize) {
         PointerBuffer p = memAllocPointer(1);
-        int err = vmaMapMemory(vk.vmaAllocator(), vmaAllocation, p);
-        if (err != VK_SUCCESS) {
-            throw new RuntimeException("vmaMapMemory failed: " + err);
-        }
+        vmaMapMemory(vk.vmaAllocator(), vmaAllocation, p);
         long dst = p.get(0);
 
         if (src instanceof ByteBuffer) {
@@ -254,26 +203,17 @@ public final class VkResourceFactory {
     }
 
     public VkTexture create1x1Rgba8Texture(int r, int g, int b, int a) {
-        VkImageAlloc img = createImage2D(
-                1, 1,
-                VK_FORMAT_R8G8B8A8_UNORM,
-                VK_IMAGE_TILING_LINEAR,
-                VK_IMAGE_USAGE_SAMPLED_BIT,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-        );
+        VkImageAlloc img = createImage2D(1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_LINEAR,
+                VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
-        // 使用 VMA 映射并写入像素
         PointerBuffer pp = memAllocPointer(1);
         vmaMapMemory(vk.vmaAllocator(), img.memory, pp);
         long ptr = pp.get(0);
-        memPutByte(ptr + 0, (byte) r);
-        memPutByte(ptr + 1, (byte) g);
-        memPutByte(ptr + 2, (byte) b);
-        memPutByte(ptr + 3, (byte) a);
+        memPutByte(ptr + 0, (byte) r); memPutByte(ptr + 1, (byte) g);
+        memPutByte(ptr + 2, (byte) b); memPutByte(ptr + 3, (byte) a);
         vmaUnmapMemory(vk.vmaAllocator(), img.memory);
         memFree(pp);
 
-        // 【优化】：接入智能 Batch 系统
         VkCommandBuffer cmd = getOrCreateTransferCmd();
         transitionImageLayout(cmd, img.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         flushOrKeepTransferCmd(cmd);
@@ -282,35 +222,21 @@ public final class VkResourceFactory {
         long sampler = createSamplerDefault();
 
         VkTexture tex = new VkTexture();
-        tex.image = img.image;
-        tex.memory = img.memory; // 保存 VmaAllocation
-        tex.view = view;
-        tex.sampler = sampler;
-        tex.width = 1;
-        tex.height = 1;
+        tex.image = img.image; tex.memory = img.memory; tex.view = view; tex.sampler = sampler;
+        tex.width = 1; tex.height = 1;
         return tex;
     }
 
     public void destroyTexture(VkTexture t) {
-        if (t == null) {
-            return;
-        }
-        if (t.sampler != 0) {
-            vkDestroySampler(vk.device(), t.sampler, null);
-        }
-        if (t.view != 0) {
-            vkDestroyImageView(vk.device(), t.view, null);
-        }
-        if (t.image != 0 && t.memory != 0) {
-            vmaDestroyImage(vk.vmaAllocator(), t.image, t.memory);
-        }
+        if (t == null) return;
+        if (t.sampler != 0) vkDestroySampler(vk.device(), t.sampler, null);
+        if (t.view != 0) vkDestroyImageView(vk.device(), t.view, null);
+        if (t.image != 0 && t.memory != 0) vmaDestroyImage(vk.vmaAllocator(), t.image, t.memory);
         t.sampler = t.view = t.image = t.memory = 0;
     }
 
     private void ensureTransferCommandPool() {
-        if (transferCommandPool != 0) {
-            return;
-        }
+        if (transferCommandPool != 0) return;
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkCommandPoolCreateInfo ci = VkCommandPoolCreateInfo.calloc(stack)
                     .sType$Default()
@@ -359,10 +285,9 @@ public final class VkResourceFactory {
         vkEndCommandBuffer(cmd);
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            // 1. 创建一个未发信号状态的 Fence (栅栏)
             VkFenceCreateInfo fenceInfo = VkFenceCreateInfo.calloc(stack)
                     .sType$Default()
-                    .flags(0); // 0 表示默认的 unsignaled 状态
+                    .flags(0);
 
             LongBuffer pFence = stack.mallocLong(1);
             int err = vkCreateFence(vk.device(), fenceInfo, null, pFence);
@@ -371,7 +296,6 @@ public final class VkResourceFactory {
             }
             long fence = pFence.get(0);
 
-            // 2. 提交 CommandBuffer 到队列，并绑定刚才创建的 Fence
             VkSubmitInfo si = VkSubmitInfo.calloc(stack)
                     .sType$Default()
                     .pCommandBuffers(stack.pointers(cmd));
@@ -382,14 +306,12 @@ public final class VkResourceFactory {
                 throw new RuntimeException("vkQueueSubmit(transfer) failed: " + err);
             }
 
-            // 3. 阻塞 CPU，仅等待这一个 Fence 被 GPU 触发
             err = vkWaitForFences(vk.device(), fence, true, Long.MAX_VALUE);
             if (err != VK_SUCCESS) {
                 vkDestroyFence(vk.device(), fence, null);
                 throw new RuntimeException("vkWaitForFences failed: " + err);
             }
 
-            // 4. 同步完成后，安全销毁 Fence 和 CommandBuffer
             vkDestroyFence(vk.device(), fence, null);
             vkFreeCommandBuffers(vk.device(), transferCommandPool, cmd);
         }
@@ -419,9 +341,8 @@ public final class VkResourceFactory {
     }
 
     private static final class VkImageAlloc {
-
         long image;
-        long memory; // 内部变更为 VmaAllocation 句柄
+        long memory; 
     }
 
     private VkImageAlloc createImage2D(int w, int h, int format, int tiling, int usage, int properties) {
@@ -451,7 +372,6 @@ public final class VkResourceFactory {
             LongBuffer pImg = stack.mallocLong(1);
             PointerBuffer pAlloc = stack.mallocPointer(1);
 
-            // VMA 接管 Image 创建与分配
             int err = vmaCreateImage(vk.vmaAllocator(), ici, allocInfo, pImg, pAlloc, null);
             if (err != VK_SUCCESS) {
                 throw new RuntimeException("vmaCreateImage failed: " + err);
@@ -459,7 +379,7 @@ public final class VkResourceFactory {
 
             VkImageAlloc out = new VkImageAlloc();
             out.image = pImg.get(0);
-            out.memory = pAlloc.get(0); // 保存 VmaAllocation 句柄
+            out.memory = pAlloc.get(0); 
             return out;
         }
     }
@@ -499,7 +419,6 @@ public final class VkResourceFactory {
 
             } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED
                     && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-                // 补充 1x1 纹理所需的直接转换
                 barrier.srcAccessMask(0);
                 barrier.dstAccessMask(VK_ACCESS_SHADER_READ_BIT);
                 srcStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
@@ -533,10 +452,7 @@ public final class VkResourceFactory {
         }
     }
 
-    /**
-     * 将任意格式的 ByteBuffer 数据上传并创建为 Vulkan Texture2D。
-     */
-    public VkTexture createTexture2DFromBuffer(ByteBuffer pixels, int w, int h, int vkFormat) {
+    public VkTexture createTexture2DFromBuffer(ByteBuffer pixels, int w, int h, int vkFormat, boolean swizzleABGR) {
         if (pixels == null) {
             throw new IllegalArgumentException("pixels is null");
         }
@@ -552,23 +468,21 @@ public final class VkResourceFactory {
 
         VkImageAlloc img = createImage2D(
                 w, h,
-                vkFormat, // 使用传入的动态格式
+                vkFormat, 
                 VK_IMAGE_TILING_OPTIMAL,
                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
         );
 
-        // 【优化】：接入智能 Batch 系统
         VkCommandBuffer cmd = getOrCreateTransferCmd();
         transitionImageLayout(cmd, img.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         copyBufferToImage(cmd, staging.handle, img.image, w, h);
         transitionImageLayout(cmd, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         flushOrKeepTransferCmd(cmd);
 
-        // 【优化】：延迟销毁暂存缓冲
-        deferOrDestroyStagingBuffer(staging);
+        destroyStagingBuffer(staging);
 
-        long view = createImageView(img.image, vkFormat, VK_IMAGE_ASPECT_COLOR_BIT); // 使用传入的动态格式
+        long view = createImageView(img.image, vkFormat, VK_IMAGE_ASPECT_COLOR_BIT, swizzleABGR); 
         long sampler = createSamplerDefault();
 
         VkTexture tex = new VkTexture();
@@ -610,12 +524,8 @@ public final class VkResourceFactory {
         return t;
     }
 
-    /**
-     * 将数据从源 Buffer (通常是 Staging Buffer) 拷贝到目标 Buffer (通常是 Device Local Buffer)
-     * 此方法保持独立运行，保障 `VulkanMeshManager` 等外部调用能安全地立刻销毁 Staging Buffer。
-     */
     public void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, long size) {
-        VkCommandBuffer cmd = beginSingleTimeCommands();
+        VkCommandBuffer cmd = getOrCreateTransferCmd();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkBufferCopy.Buffer copyRegion = VkBufferCopy.calloc(1, stack);
             copyRegion.srcOffset(0);
@@ -624,6 +534,6 @@ public final class VkResourceFactory {
 
             vkCmdCopyBuffer(cmd, srcBuffer.handle, dstBuffer.handle, copyRegion);
         }
-        endSingleTimeCommands(cmd);
+        flushOrKeepTransferCmd(cmd);
     }
 }

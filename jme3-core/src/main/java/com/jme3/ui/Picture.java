@@ -166,7 +166,7 @@ public class Picture extends Geometry {
      */
     public void setTexture(AssetManager assetManager, Texture2D tex, boolean useAlpha){
         if (getMaterial() == null){
-            Material mat = new Material(assetManager, "Common/MatDefs/Gui/Gui.j3md");
+            Material mat = new Material(assetManager, "VkCommon/MatDefs/Gui/VKGui.j3md");
             mat.setColor("Color", ColorRGBA.White);
             setMaterial(mat);
         }

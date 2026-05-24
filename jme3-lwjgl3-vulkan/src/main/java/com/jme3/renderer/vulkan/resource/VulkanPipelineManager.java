@@ -86,7 +86,7 @@ public final class VulkanPipelineManager {
 
         VkPipelineKey baseKey = new VkPipelineKey(
                 new VkShaderKey(0, 0, new VkVariantKey(false, false, false)),
-                defaultPassKey, VK_CULL_MODE_NONE, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VkPipelineKey.Blend.Off
+                defaultPassKey, VK_CULL_MODE_NONE, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VkPipelineKey.Blend.Off, 0
         );
         pipelinePushConstantSize.put(baseKey, 0);
 
@@ -340,29 +340,24 @@ public final class VulkanPipelineManager {
             String t = (b.type != null) ? b.type.toUpperCase() : "";
             ParamBindingPlan.BindingSlot slot = new ParamBindingPlan.BindingSlot(b.set, b.binding, b.type);
 
-            // O(1) 快取：每个 set 记录最小 binding 的 texture/ubo slot
             if (t.contains("COMBINED_IMAGE_SAMPLER")) {
                 ParamBindingPlan.BindingSlot extTex = p.getTextureSlot(b.set);
                 if (extTex == null || b.binding < extTex.binding) {
                     p.setTextureSlot(b.set, slot);
                 }
+
+                // 【核心修复】：绝对限制只有真实的贴图才能放入 samplerByName！
+                String norm = ParamBindingPlan.normalizeParamName((b.name != null) ? b.name : "");
+                if (!norm.isEmpty()) {
+                    p.samplerByName.put(norm, slot);
+                }
+
             } else if (t.contains("UNIFORM_BUFFER")) {
                 ParamBindingPlan.BindingSlot extUbo = p.getUboSlot(b.set);
                 if (extUbo == null || b.binding < extUbo.binding) {
                     p.setUboSlot(b.set, slot);
                 }
             }
-
-            if (!t.contains("COMBINED_IMAGE_SAMPLER") && !t.contains("UNIFORM_BUFFER")) {
-                continue;
-            }
-
-            String norm = ParamBindingPlan.normalizeParamName((b.name != null) ? b.name : "");
-            if (!norm.isEmpty()) {
-                p.samplerByName.put(norm, slot);
-            }
-
-            // 去 ABI：不再注入固定槽位 alias（set0/binding1 等）
         }
         return p;
     }
@@ -467,19 +462,10 @@ public final class VulkanPipelineManager {
             return ResourceSemantic.UNKNOWN_UBO;
         }
 
+        // 废除 COLOR_MAP 等死板枚举
         if (type.contains("COMBINED_IMAGE_SAMPLER")) {
-            if ("colormap".equals(normName) || "diffusemap".equals(normName)) {
-                return ResourceSemantic.COLOR_MAP;
-            }
-            if ("lightmap".equals(normName)) {
-                return ResourceSemantic.LIGHT_MAP;
-            }
-            if ("extratex".equals(normName) || "extramap".equals(normName)) {
-                return ResourceSemantic.EXTRA_TEX;
-            }
-            return ResourceSemantic.UNKNOWN_SAMPLER;
+            return ResourceSemantic.SAMPLED_IMAGE;
         }
-
         return ResourceSemantic.UNKNOWN_SAMPLER;
     }
 
@@ -491,13 +477,12 @@ public final class VulkanPipelineManager {
         boolean hasDynamic = false;
         boolean hasPerDraw = false;
         boolean hasAnyUbo = false;
-        boolean hasSampler = false;
+        boolean hasMaterial = false;
 
         for (BindingPlanEntry e : entries) {
             if (e == null) {
                 continue;
             }
-
             String dt = (e.descriptorType != null) ? e.descriptorType.toUpperCase() : "";
 
             if (e.dynamic) {
@@ -506,25 +491,21 @@ public final class VulkanPipelineManager {
             if (dt.contains("UNIFORM_BUFFER")) {
                 hasAnyUbo = true;
             }
-            if (dt.contains("COMBINED_IMAGE_SAMPLER")) {
-                hasSampler = true;
+            // 只要里面包含了贴图，就具备材质持久缓存潜力
+            if (e.semantic == ResourceSemantic.SAMPLED_IMAGE) {
+                hasMaterial = true;
             }
 
-            if (e.semantic == ResourceSemantic.PER_DRAW_UBO
-                    || e.semantic == ResourceSemantic.UNKNOWN_UBO
-                    || e.semantic == ResourceSemantic.ALPHA_PARAMS
-                    || e.semantic == ResourceSemantic.DESATURATION_PARAMS) {
+            if (e.semantic == ResourceSemantic.PER_DRAW_UBO || e.semantic == ResourceSemantic.UNKNOWN_UBO
+                    || e.semantic == ResourceSemantic.ALPHA_PARAMS || e.semantic == ResourceSemantic.DESATURATION_PARAMS) {
                 hasPerDraw = true;
             }
         }
 
-        // 只要 set 内有 UBO（尤其 dynamic / per-draw），必须按 draw 处理，不能 MATERIAL 缓存
         if (hasDynamic || hasPerDraw || hasAnyUbo) {
             return CacheClass.PER_DRAW;
         }
-
-        // 纯 sampler set 才 MATERIAL
-        if (hasSampler) {
+        if (hasMaterial) {
             return CacheClass.MATERIAL;
         }
 

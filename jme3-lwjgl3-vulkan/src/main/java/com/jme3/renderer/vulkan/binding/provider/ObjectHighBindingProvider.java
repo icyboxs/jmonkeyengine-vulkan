@@ -5,6 +5,7 @@ import com.jme3.renderer.vulkan.binding.api.DescriptorBindRequest;
 import com.jme3.renderer.vulkan.binding.api.HighFrequencySetProvider;
 import com.jme3.renderer.vulkan.binding.api.HighSetResolveResult;
 import com.jme3.renderer.vulkan.binding.cache.ObjectBindingKey;
+import com.jme3.renderer.vulkan.cmd.DrawCmd;
 import com.jme3.renderer.vulkan.frame.VulkanFrameDriver;
 import com.jme3.renderer.vulkan.reflection.ParamBindingPlan;
 import com.jme3.renderer.vulkan.resource.VkTexture;
@@ -15,9 +16,8 @@ import java.util.Iterator;
 import java.util.Map;
 
 /**
- * D3：对象级 HIGH 绑定
- * 完全由反射数据驱动确定贴图与 UBO_DYNAMIC 的 binding 槽位。
- * 并且使用 O(1) 查表和零分配（Zero-Allocation）数组进行匹配。
+ * D3：对象级 HIGH 绑定 完全由反射数据驱动确定贴图与 UBO_DYNAMIC 的 binding 槽位。 并且使用 O(1)
+ * 查表和零分配（Zero-Allocation）数组进行匹配。
  */
 public final class ObjectHighBindingProvider implements HighFrequencySetProvider {
 
@@ -71,6 +71,7 @@ public final class ObjectHighBindingProvider implements HighFrequencySetProvider
 
         // 写入贴图（如果 Shader 声明了）
         if (texSlot != null) {
+            // 【修改】调用 pickObjectTexture 坐标提取
             Texture objTexJme = pickObjectTexture(req, setIndex, texSlot.binding);
             VkTexture tex;
             long sampler;
@@ -122,40 +123,21 @@ public final class ObjectHighBindingProvider implements HighFrequencySetProvider
      * 极速挑选对象纹理（使用零分配数组，告别 HashMap 迭代）
      */
     private static Texture pickObjectTexture(DescriptorBindRequest req, int targetSet, int targetBinding) {
-        if (req == null || req.drawCmd == null) {
-            return null;
-        }
-
-        // 1. 优先精确匹配 set 和 binding
-        if (req.drawCmd.customImageCount > 0) {
-            for (int i = 0; i < req.drawCmd.customImageCount; i++) {
-                ParamBindingPlan.BindingSlot slot = req.drawCmd.customImageSlots[i];
-                if (slot != null && slot.set == targetSet && slot.binding == targetBinding) {
-                    Texture t = req.drawCmd.customImageTextures[i];
-                    if (t != null && t.getImage() != null) {
-                        return t;
-                    }
-                }
-            }
-            
-            // 2. 泛选兜底：只要 set 匹配就拿来用（为了鲁棒性）
-            for (int i = 0; i < req.drawCmd.customImageCount; i++) {
-                ParamBindingPlan.BindingSlot slot = req.drawCmd.customImageSlots[i];
-                if (slot != null && slot.set == targetSet) {
-                    Texture t = req.drawCmd.customImageTextures[i];
-                    if (t != null && t.getImage() != null) {
-                        return t;
-                    }
-                }
+        if (req == null || req.drawCmd == null) return null;
+        DrawCmd cmd = req.drawCmd;
+        
+        for (int i = 0; i < cmd.customImageCount; i++) {
+            ParamBindingPlan.BindingSlot slot = cmd.customImageSlots[i];
+            if (slot != null && slot.set == targetSet && slot.binding == targetBinding) {
+                Texture t = cmd.customImageTextures[i];
+                if (t != null) return t;
             }
         }
-
-        // 3. 退化为 extra snapshot
-        Texture extra = req.drawCmd.useWhiteExtra ? null : req.drawCmd.jmeExtraSnapshot;
-        if (extra != null && extra.getImage() != null) {
-            return extra;
-        }
-
-        return null; // 上层会回退为 white
+        
+        // 极力兜底
+        Texture tex0 = cmd.jmeTex0Snapshot;
+        if (tex0 != null && !cmd.useWhiteTex0) return tex0;
+        
+        return null;
     }
 }

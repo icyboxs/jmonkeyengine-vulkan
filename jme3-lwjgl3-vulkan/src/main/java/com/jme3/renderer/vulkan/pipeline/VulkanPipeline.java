@@ -104,9 +104,13 @@ public final class VulkanPipeline {
     }
 
     private void validateStage2Contract() {
-        if (vk == null || vk.device() == null) throw new IllegalStateException("Vulkan context/device is not initialized");
-        if (shaders == null) throw new IllegalStateException("VulkanShaders is null");
-        
+        if (vk == null || vk.device() == null) {
+            throw new IllegalStateException("Vulkan context/device is not initialized");
+        }
+        if (shaders == null) {
+            throw new IllegalStateException("VulkanShaders is null");
+        }
+
         if (descriptorSetLayouts == null || descriptorSetLayouts.length == 0) {
             throw new IllegalStateException("descriptorSetLayouts is null/empty");
         }
@@ -143,8 +147,12 @@ public final class VulkanPipeline {
 
     private long createGraphicsPipeline() throws IOException {
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            if (vertGlsl == null || fragGlsl == null) throw new IllegalStateException("Pipeline missing GLSL sources");
-            if (key == null || key.passKey == null) throw new IllegalStateException("PipelineKey/passKey is null");
+            if (vertGlsl == null || fragGlsl == null) {
+                throw new IllegalStateException("Pipeline missing GLSL sources");
+            }
+            if (key == null || key.passKey == null) {
+                throw new IllegalStateException("PipelineKey/passKey is null");
+            }
 
             VkPipelineRenderingCreateInfoKHR renderingCI = VkPipelineRenderingCreateInfoKHR.calloc(stack)
                     .sType(KHRDynamicRendering.VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR)
@@ -160,16 +168,43 @@ public final class VulkanPipeline {
             stages.get(0).sType$Default().stage(VK_SHADER_STAGE_VERTEX_BIT).module(vert).pName(stack.UTF8("main"));
             stages.get(1).sType$Default().stage(VK_SHADER_STAGE_FRAGMENT_BIT).module(frag).pName(stack.UTF8("main"));
 
+            // =========================================================
+            // 【全动态管线输入】：按照网格特征掩码动态开启 Location 槽位
+            // =========================================================
             VkPipelineVertexInputStateCreateInfo vi = VkPipelineVertexInputStateCreateInfo.calloc(stack).sType$Default();
-            VkVertexInputBindingDescription.Buffer bind = VkVertexInputBindingDescription.calloc(2, stack);
-            bind.get(0).binding(0).stride(12).inputRate(VK_VERTEX_INPUT_RATE_VERTEX);
-            bind.get(1).binding(1).stride(8).inputRate(VK_VERTEX_INPUT_RATE_VERTEX);
+            
+            int mask = key.vertexLayoutMask;
+            int attrCount = 0;
+            for (int i = 0; i < VkPipelineKey.VERTEX_TYPES.length; i++) {
+                if (((mask >> (i * 4)) & 0xF) > 0) attrCount++;
+            }
 
-            VkVertexInputAttributeDescription.Buffer attr = VkVertexInputAttributeDescription.calloc(2, stack);
-            attr.get(0).location(0).binding(0).format(VK_FORMAT_R32G32B32_SFLOAT).offset(0);
-            attr.get(1).location(1).binding(1).format(VK_FORMAT_R32G32_SFLOAT).offset(0);
+            if (attrCount > 0) {
+                VkVertexInputBindingDescription.Buffer bind = VkVertexInputBindingDescription.calloc(attrCount, stack);
+                VkVertexInputAttributeDescription.Buffer attr = VkVertexInputAttributeDescription.calloc(attrCount, stack);
 
-            vi.pVertexBindingDescriptions(bind).pVertexAttributeDescriptions(attr);
+                int bufferIndex = 0;
+                for (int i = 0; i < VkPipelineKey.VERTEX_TYPES.length; i++) {
+                    int components = (mask >> (i * 4)) & 0xF;
+                    if (components > 0) {
+                        int stride = components * 4; // 因为全部转换为 FLOAT，每元素就是 4 字节
+                        
+                        int format; // 根据分量数决定 Vulkan vec 格式
+                        switch (components) {
+                            case 1: format = VK_FORMAT_R32_SFLOAT; break;
+                            case 2: format = VK_FORMAT_R32G32_SFLOAT; break;
+                            case 3: format = VK_FORMAT_R32G32B32_SFLOAT; break;
+                            default: format = VK_FORMAT_R32G32B32A32_SFLOAT; break;
+                        }
+
+                        bind.get(bufferIndex).binding(bufferIndex).stride(stride).inputRate(VK_VERTEX_INPUT_RATE_VERTEX);
+                        // location 严格映射为 i (对应着我们在 Key 中制定的契约)
+                        attr.get(bufferIndex).location(i).binding(bufferIndex).format(format).offset(0);
+                        bufferIndex++;
+                    }
+                }
+                vi.pVertexBindingDescriptions(bind).pVertexAttributeDescriptions(attr);
+            }
 
             VkPipelineInputAssemblyStateCreateInfo ia = VkPipelineInputAssemblyStateCreateInfo.calloc(stack)
                     .sType$Default().topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
@@ -183,17 +218,31 @@ public final class VulkanPipeline {
             VkPipelineMultisampleStateCreateInfo ms = VkPipelineMultisampleStateCreateInfo.calloc(stack)
                     .sType$Default().rasterizationSamples(key.passKey.samples);
 
-            VkPipelineDepthStencilStateCreateInfo ds = VkPipelineDepthStencilStateCreateInfo.calloc(stack)
-                    .sType$Default().depthTestEnable(key.depthTest).depthWriteEnable(key.depthWrite).depthCompareOp(key.depthCompareOp);
+            // 强行覆盖透明/GUI物体的深度测试
+            boolean isTransparent = (key.blend != VkPipelineKey.Blend.Off);
+            boolean finalDepthTest = isTransparent ? false : key.depthTest;
+            boolean finalDepthWrite = isTransparent ? false : key.depthWrite;
 
+            VkPipelineDepthStencilStateCreateInfo ds = VkPipelineDepthStencilStateCreateInfo.calloc(stack)
+                    .sType$Default()
+                    .depthTestEnable(finalDepthTest)
+                    .depthWriteEnable(finalDepthWrite)
+                    .depthCompareOp(key.depthCompareOp);
+
+            // 确保 GUI 的混合因子完全贴合 jME3 设定
             VkPipelineColorBlendAttachmentState.Buffer cba = VkPipelineColorBlendAttachmentState.calloc(1, stack);
-            cba.get(0).colorWriteMask(0xF);
+            cba.get(0).colorWriteMask(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT);
 
             if (key.blend == VkPipelineKey.Blend.Off) {
                 cba.get(0).blendEnable(false);
             } else if (key.blend == VkPipelineKey.Blend.Alpha) {
-                cba.get(0).blendEnable(true).srcColorBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA).dstColorBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
-                        .colorBlendOp(VK_BLEND_OP_ADD).srcAlphaBlendFactor(VK_BLEND_FACTOR_ONE).dstAlphaBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA).alphaBlendOp(VK_BLEND_OP_ADD);
+                cba.get(0).blendEnable(true)
+                        .srcColorBlendFactor(VK_BLEND_FACTOR_SRC_ALPHA)
+                        .dstColorBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
+                        .colorBlendOp(VK_BLEND_OP_ADD)
+                        .srcAlphaBlendFactor(VK_BLEND_FACTOR_ONE)
+                        .dstAlphaBlendFactor(VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)
+                        .alphaBlendOp(VK_BLEND_OP_ADD);
             } else if (key.blend == VkPipelineKey.Blend.Additive) {
                 cba.get(0).blendEnable(true).srcColorBlendFactor(VK_BLEND_FACTOR_ONE).dstColorBlendFactor(VK_BLEND_FACTOR_ONE)
                         .colorBlendOp(VK_BLEND_OP_ADD).srcAlphaBlendFactor(VK_BLEND_FACTOR_ONE).dstAlphaBlendFactor(VK_BLEND_FACTOR_ONE).alphaBlendOp(VK_BLEND_OP_ADD);
@@ -212,7 +261,9 @@ public final class VulkanPipeline {
                     .layout(pipelineLayout).renderPass(VK_NULL_HANDLE).subpass(0);
 
             LongBuffer pP = stack.mallocLong(1);
-            if (vkCreateGraphicsPipelines(vk.device(), VK_NULL_HANDLE, pCI, null, pP) != VK_SUCCESS) throw new RuntimeException("vkCreateGraphicsPipelines failed");
+            if (vkCreateGraphicsPipelines(vk.device(), VK_NULL_HANDLE, pCI, null, pP) != VK_SUCCESS) {
+                throw new RuntimeException("vkCreateGraphicsPipelines failed");
+            }
             return pP.get(0);
         }
     }
@@ -222,7 +273,9 @@ public final class VulkanPipeline {
     }
 
     public long getDescriptorSetLayoutAt(int setIndex) {
-        if (descriptorSetLayouts == null || setIndex < 0 || setIndex >= descriptorSetLayouts.length) return 0L;
+        if (descriptorSetLayouts == null || setIndex < 0 || setIndex >= descriptorSetLayouts.length) {
+            return 0L;
+        }
         return descriptorSetLayouts[setIndex];
     }
 }

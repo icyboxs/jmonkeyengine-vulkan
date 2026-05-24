@@ -2,6 +2,7 @@ package com.jme3.renderer.vulkan.binding.provider;
 
 import com.jme3.renderer.vulkan.VulkanRuntime;
 import com.jme3.renderer.vulkan.binding.api.DescriptorBindRequest;
+import com.jme3.renderer.vulkan.cmd.DrawCmd;
 import com.jme3.renderer.vulkan.reflection.BindingPlanEntry;
 import com.jme3.renderer.vulkan.reflection.CacheClass;
 import com.jme3.renderer.vulkan.reflection.ResourceSemantic;
@@ -9,6 +10,7 @@ import com.jme3.renderer.vulkan.reflection.SetBindingPlan;
 import com.jme3.renderer.vulkan.resource.VkTexture;
 import com.jme3.texture.Texture;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -18,10 +20,7 @@ public final class PlanDrivenSetResolver {
 
     private final VulkanRuntime runtime;
 
-    // 跨帧材质缓存（MATERIAL）
     private final Map<MaterialSetKey, Long> materialCache = new HashMap<>();
-
-    // 按帧缓存（PER_FRAME）
     private final Map<Integer, HashMap<FrameSetKey, Long>> frameCache = new HashMap<>();
 
     public PlanDrivenSetResolver(VulkanRuntime runtime) {
@@ -32,7 +31,6 @@ public final class PlanDrivenSetResolver {
     }
 
     public void beginFrame(int frameIndex) {
-        // 只保留当前帧和上一帧（与 framesInFlight=2 匹配）
         int frames = com.jme3.renderer.vulkan.frame.VulkanFrameDriver.MAX_FRAMES_IN_FLIGHT;
         int prev = (frameIndex + frames - 1) % frames;
 
@@ -51,19 +49,12 @@ public final class PlanDrivenSetResolver {
     }
 
     public long resolveAndWriteSet(DescriptorBindRequest req, SetBindingPlan setPlan, long setLayout) {
-        if (req == null) {
-            throw new IllegalArgumentException("req is null");
-        }
-        if (setPlan == null) {
-            throw new IllegalArgumentException("setPlan is null");
-        }
-        if (setLayout == 0L) {
-            throw new IllegalArgumentException("setLayout is 0");
+        if (req == null || setPlan == null || setLayout == 0L) {
+            throw new IllegalArgumentException();
         }
 
         CacheClass cc = (setPlan.cacheClass != null) ? setPlan.cacheClass : CacheClass.NONE;
 
-        // 1) 先查缓存
         if (cc == CacheClass.MATERIAL) {
             MaterialSetKey k = buildMaterialKey(req, setPlan, setLayout);
             Long hit = materialCache.get(k);
@@ -89,7 +80,6 @@ public final class PlanDrivenSetResolver {
             return set;
         }
 
-        // PER_DRAW / NONE
         return allocAndWrite(req, setPlan, setLayout);
     }
 
@@ -107,10 +97,11 @@ public final class PlanDrivenSetResolver {
             if (e == null) {
                 continue;
             }
-
             String dtype = (e.descriptorType != null) ? e.descriptorType.toUpperCase() : "";
+
             if (dtype.contains("COMBINED_IMAGE_SAMPLER")) {
-                writeSamplerBinding(req, set, e);
+                // 【核心修改】传入 setPlan.setIndex 用于坐标比对
+                writeSamplerBinding(req, set, setPlan.setIndex, e);
             } else if (dtype.contains("UNIFORM_BUFFER")) {
                 writeBufferBinding(req, set, e);
             } else {
@@ -120,8 +111,8 @@ public final class PlanDrivenSetResolver {
         return set;
     }
 
-    private void writeSamplerBinding(DescriptorBindRequest req, long dstSet, BindingPlanEntry e) {
-        Texture texJme = pickTexture(req, e.semantic);
+    private void writeSamplerBinding(DescriptorBindRequest req, long dstSet, int setIndex, BindingPlanEntry e) {
+        Texture texJme = pickTexture(req, setIndex, e.binding);
         VkTexture texVk;
         long sampler;
 
@@ -142,119 +133,103 @@ public final class PlanDrivenSetResolver {
 
     private void writeBufferBinding(DescriptorBindRequest req, long dstSet, BindingPlanEntry e) {
         ResourceSemantic semantic = (e.semantic != null) ? e.semantic : ResourceSemantic.UNKNOWN_UBO;
-
-        switch (semantic) {
-            case PER_DRAW_UBO:
-            case UNKNOWN_UBO:
-                if (req.perDrawUboHandle == 0L) {
-                    throw new IllegalStateException("perDrawUboHandle == 0 for binding=" + e.binding);
-                }
-                long range = (req.perDrawUboRange > 0) ? (long) req.perDrawUboRange : 256L;
-                runtime.writeSingleBufferToSet(dstSet, e.binding, req.perDrawUboHandle, 0L, range, e.dynamic);
-                return;
-
-            default:
-                throw new IllegalStateException("Unsupported UBO semantic: " + semantic);
+        if (semantic == ResourceSemantic.PER_DRAW_UBO || semantic == ResourceSemantic.UNKNOWN_UBO) {
+            if (req.perDrawUboHandle == 0L) {
+                throw new IllegalStateException("perDrawUboHandle == 0");
+            }
+            long range = (req.perDrawUboRange > 0) ? (long) req.perDrawUboRange : 256L;
+            runtime.writeSingleBufferToSet(dstSet, e.binding, req.perDrawUboHandle, 0L, range, e.dynamic);
+        } else {
+            throw new IllegalStateException("Unsupported UBO semantic: " + semantic);
         }
     }
 
-    // ---- key build ----
-    private MaterialSetKey buildMaterialKey(DescriptorBindRequest req, SetBindingPlan setPlan, long setLayout) {
-        long tex0View = 0L, tex0Samp = 0L;
-        long lightView = 0L, lightSamp = 0L;
-        long extraView = 0L, extraSamp = 0L;
+// 【修改】：使用绝对的 set/binding 物理槽位寻找动态数组里存放的对应贴图
+    private static Texture pickTexture(DescriptorBindRequest req, int setIndex, int bindingIndex) {
+        if (req == null || req.drawCmd == null) {
+            return null;
+        }
+        DrawCmd cmd = req.drawCmd;
 
-        // 用 semantic 抽取稳定材质维度
-        if (setPlan.bindings != null) {
-            for (BindingPlanEntry e : setPlan.bindings) {
-                if (e == null) {
-                    continue;
-                }
-                ResourceSemantic s = (e.semantic != null) ? e.semantic : ResourceSemantic.UNKNOWN_SAMPLER;
-                if (s == ResourceSemantic.COLOR_MAP) {
-                    Texture t = (req.drawCmd != null && req.drawCmd.materialResolvePlan != null && !req.drawCmd.useWhiteTex0)
-                            ? req.drawCmd.materialResolvePlan.tex0 : null;
-                    VkTexture vk = runtime.getOrCreateVkTexture(t);
-                    tex0View = (vk != null) ? vk.view : 0L;
-                    tex0Samp = (t != null) ? runtime.getOrCreateSampler(t) : ((vk != null) ? vk.sampler : 0L);
-                } else if (s == ResourceSemantic.LIGHT_MAP) {
-                    Texture t = (req.drawCmd != null && req.drawCmd.materialResolvePlan != null && !req.drawCmd.useWhiteLight)
-                            ? req.drawCmd.materialResolvePlan.light : null;
-                    VkTexture vk = runtime.getOrCreateVkTexture(t);
-                    lightView = (vk != null) ? vk.view : 0L;
-                    lightSamp = (t != null) ? runtime.getOrCreateSampler(t) : ((vk != null) ? vk.sampler : 0L);
-                } else if (s == ResourceSemantic.EXTRA_TEX) {
-                    Texture t = (req.drawCmd != null && !req.drawCmd.useWhiteExtra) ? req.drawCmd.jmeExtraSnapshot : null;
-                    VkTexture vk = runtime.getOrCreateVkTexture(t);
-                    extraView = (vk != null) ? vk.view : 0L;
-                    extraSamp = (t != null) ? runtime.getOrCreateSampler(t) : ((vk != null) ? vk.sampler : 0L);
+        for (int i = 0; i < cmd.customImageCount; i++) {
+            com.jme3.renderer.vulkan.reflection.ParamBindingPlan.BindingSlot slot = cmd.customImageSlots[i];
+            if (slot != null && slot.set == setIndex && slot.binding == bindingIndex) {
+                Texture t = cmd.customImageTextures[i];
+                if (t != null) {
+                    return t;
                 }
             }
         }
 
-        return new MaterialSetKey(setLayout, req.pipelineHash, tex0View, tex0Samp, lightView, lightSamp, extraView, extraSamp);
+        // 终极保护网：如果没有匹配上，强送第一张基础纹理，杜绝画面丢失
+        if (!cmd.useWhiteTex0 && cmd.jmeTex0Snapshot != null) {
+            return cmd.jmeTex0Snapshot;
+        }
+        return null;
+    }
+
+    private MaterialSetKey buildMaterialKey(DescriptorBindRequest req, SetBindingPlan setPlan, long setLayout) {
+        int samplerCount = 0;
+        if (setPlan.bindings != null) {
+            for (BindingPlanEntry e : setPlan.bindings) {
+                if (e != null && e.semantic == ResourceSemantic.SAMPLED_IMAGE) {
+                    samplerCount++;
+                }
+            }
+        }
+
+        long[] views = new long[samplerCount];
+        long[] samplers = new long[samplerCount];
+        int idx = 0;
+
+        if (setPlan.bindings != null) {
+            for (BindingPlanEntry e : setPlan.bindings) {
+                if (e == null || e.semantic != ResourceSemantic.SAMPLED_IMAGE) {
+                    continue;
+                }
+
+                Texture t = pickTexture(req, setPlan.setIndex, e.binding);
+                VkTexture vk = runtime.getOrCreateVkTexture(t);
+
+                long view = 0L;
+                long samp = 0L;
+
+                if (vk != null) {
+                    view = vk.view;
+                    samp = (t != null) ? runtime.getOrCreateSampler(t) : vk.sampler;
+                } else {
+                    vk = runtime.getOrCreateVkTexture(null);
+                    if (vk != null) {
+                        view = vk.view;
+                        samp = vk.sampler;
+                    }
+                }
+
+                views[idx] = view;
+                samplers[idx] = samp;
+                idx++;
+            }
+        }
+
+        return new MaterialSetKey(setLayout, req.pipelineHash, views, samplers);
     }
 
     private FrameSetKey buildFrameKey(DescriptorBindRequest req, SetBindingPlan setPlan, long setLayout) {
-        return new FrameSetKey(
-                req.frameIndex,
-                setLayout,
-                req.pipelineHash,
-                req.objectId,
-                req.extraTexId
-        );
+        return new FrameSetKey(req.frameIndex, setLayout, req.pipelineHash, req.objectId, req.extraTexId);
     }
 
-    private static Texture pickTexture(DescriptorBindRequest req, ResourceSemantic semantic) {
-        if (req == null || req.drawCmd == null) {
-            return null;
-        }
-        if (semantic == null) {
-            semantic = ResourceSemantic.UNKNOWN_SAMPLER;
-        }
-
-        switch (semantic) {
-            case COLOR_MAP:
-                return (req.drawCmd.materialResolvePlan != null && !req.drawCmd.useWhiteTex0)
-                        ? req.drawCmd.materialResolvePlan.tex0 : null;
-            case LIGHT_MAP:
-                return (req.drawCmd.materialResolvePlan != null && !req.drawCmd.useWhiteLight)
-                        ? req.drawCmd.materialResolvePlan.light : null;
-            case EXTRA_TEX:
-                return (!req.drawCmd.useWhiteExtra) ? req.drawCmd.jmeExtraSnapshot : null;
-            default:
-                if (!req.drawCmd.useWhiteExtra && req.drawCmd.jmeExtraSnapshot != null) {
-                    return req.drawCmd.jmeExtraSnapshot;
-                }
-                if (!req.drawCmd.useWhiteTex0 && req.drawCmd.materialResolvePlan != null) {
-                    return req.drawCmd.materialResolvePlan.tex0;
-                }
-                if (!req.drawCmd.useWhiteLight && req.drawCmd.materialResolvePlan != null) {
-                    return req.drawCmd.materialResolvePlan.light;
-                }
-                return null;
-        }
-    }
-
-    // ---- key classes ----
     private static final class MaterialSetKey {
 
         final long setLayout;
         final int pipelineHash;
-        final long tex0View, tex0Samp, lightView, lightSamp, extraView, extraSamp;
+        final long[] views;
+        final long[] samplers;
 
-        MaterialSetKey(long setLayout, int pipelineHash,
-                long tex0View, long tex0Samp,
-                long lightView, long lightSamp,
-                long extraView, long extraSamp) {
+        MaterialSetKey(long setLayout, int pipelineHash, long[] views, long[] samplers) {
             this.setLayout = setLayout;
             this.pipelineHash = pipelineHash;
-            this.tex0View = tex0View;
-            this.tex0Samp = tex0Samp;
-            this.lightView = lightView;
-            this.lightSamp = lightSamp;
-            this.extraView = extraView;
-            this.extraSamp = extraSamp;
+            this.views = views;
+            this.samplers = samplers;
         }
 
         @Override
@@ -267,14 +242,15 @@ public final class PlanDrivenSetResolver {
             }
             MaterialSetKey k = (MaterialSetKey) o;
             return setLayout == k.setLayout && pipelineHash == k.pipelineHash
-                    && tex0View == k.tex0View && tex0Samp == k.tex0Samp
-                    && lightView == k.lightView && lightSamp == k.lightSamp
-                    && extraView == k.extraView && extraSamp == k.extraSamp;
+                    && Arrays.equals(views, k.views) && Arrays.equals(samplers, k.samplers);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(setLayout, pipelineHash, tex0View, tex0Samp, lightView, lightSamp, extraView, extraSamp);
+            int result = Objects.hash(setLayout, pipelineHash);
+            result = 31 * result + Arrays.hashCode(views);
+            result = 31 * result + Arrays.hashCode(samplers);
+            return result;
         }
     }
 
@@ -286,8 +262,7 @@ public final class PlanDrivenSetResolver {
         final int objectId;
         final int extraTexId;
 
-        FrameSetKey(int frameIndex, long setLayout, int pipelineHash,
-                int objectId, int extraTexId) {
+        FrameSetKey(int frameIndex, long setLayout, int pipelineHash, int objectId, int extraTexId) {
             this.frameIndex = frameIndex;
             this.setLayout = setLayout;
             this.pipelineHash = pipelineHash;
@@ -304,11 +279,8 @@ public final class PlanDrivenSetResolver {
                 return false;
             }
             FrameSetKey k = (FrameSetKey) o;
-            return frameIndex == k.frameIndex
-                    && setLayout == k.setLayout
-                    && pipelineHash == k.pipelineHash
-                    && objectId == k.objectId
-                    && extraTexId == k.extraTexId;
+            return frameIndex == k.frameIndex && setLayout == k.setLayout && pipelineHash == k.pipelineHash
+                    && objectId == k.objectId && extraTexId == k.extraTexId;
         }
 
         @Override
@@ -316,5 +288,4 @@ public final class PlanDrivenSetResolver {
             return Objects.hash(frameIndex, setLayout, pipelineHash, objectId, extraTexId);
         }
     }
-
 }

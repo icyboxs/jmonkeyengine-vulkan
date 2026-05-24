@@ -19,4 +19,6 @@ public final class VkBuffer {
 
     /** VkDeviceMemory 句柄（vkAllocateMemory 返回，并绑定到 handle） */
     public long memory;
+    public long capacity;     // 【新增容量记录】
+    public boolean isHostVisible; // 【新增可见性】
 }

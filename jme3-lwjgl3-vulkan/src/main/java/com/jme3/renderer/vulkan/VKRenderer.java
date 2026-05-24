@@ -48,7 +48,7 @@ public final class VKRenderer implements Renderer, VkCommandRecorder {
     // --- 子系统 ---
     private final FrontendStateTracker stateTracker = new FrontendStateTracker();
     private final DrawQueue drawQueue = new DrawQueue();
-    
+
     private DrawCmdBuilder drawCmdBuilder;
     private DrawExecutor drawExecutor;
     private DefaultFrameRecorder frameRecorder;
@@ -64,16 +64,16 @@ public final class VKRenderer implements Renderer, VkCommandRecorder {
         }
 
         runtime.ensureInitialized();
-        
+
         drawCmdBuilder = new DrawCmdBuilder(runtime);
-        
+
         DefaultDescriptorSetBinder binder = new DefaultDescriptorSetBinder(
                 runtime,
                 new com.jme3.renderer.vulkan.binding.plan.FrequencyLayerRegistry(),
                 new com.jme3.renderer.vulkan.binding.cache.FrameSetCache(),
                 new com.jme3.renderer.vulkan.binding.provider.ObjectHighBindingProvider(runtime)
         );
-        
+
         drawExecutor = new DrawExecutor(binder);
         frameRecorder = new DefaultFrameRecorder(stateTracker, drawQueue, drawExecutor);
 
@@ -118,25 +118,63 @@ public final class VKRenderer implements Renderer, VkCommandRecorder {
         safePutLimit("MaxSamples", 4);
     }
 
-    private void safeAddCap(Caps c) { if (c != null) caps.add(c); }
-    private void safeAddCap(String capName) {
-        try { caps.add(Caps.valueOf(capName)); } catch (IllegalArgumentException ignored) {}
-    }
-    private void safePutLimit(String limitName, int value) {
-        try { limits.put(Limits.valueOf(limitName), value); } catch (IllegalArgumentException ignored) {}
+    private void safeAddCap(Caps c) {
+        if (c != null) {
+            caps.add(c);
+        }
     }
 
-    @Override public EnumSet<Caps> getCaps() { return caps; }
-    @Override public EnumMap<Limits, Integer> getLimits() { return limits; }
-    @Override public Statistics getStatistics() { return stats; }
+    private void safeAddCap(String capName) {
+        try {
+            caps.add(Caps.valueOf(capName));
+        } catch (IllegalArgumentException ignored) {
+        }
+    }
+
+    private void safePutLimit(String limitName, int value) {
+        try {
+            limits.put(Limits.valueOf(limitName), value);
+        } catch (IllegalArgumentException ignored) {
+        }
+    }
+
+    @Override
+    public EnumSet<Caps> getCaps() {
+        return caps;
+    }
+
+    @Override
+    public EnumMap<Limits, Integer> getLimits() {
+        return limits;
+    }
+
+    @Override
+    public Statistics getStatistics() {
+        return stats;
+    }
 
     @Override
     public void renderMesh(Mesh mesh, int lod, int count, VertexBuffer[] instanceData) {
-        if (drawQueue.isFull() || mesh == null || drawCmdBuilder == null) return;
+        if (drawQueue.isFull() || mesh == null || drawCmdBuilder == null) {
+            return;
+        }
+
+        // ========================================================
+        // [核心修复]：检查并同步 jME3 的动态 Mesh 变更
+        // BitmapText、粒子等会频繁修改 NIO Buffer 并标记 isUpdateNeeded
+        // ========================================================
+        for (VertexBuffer vb : mesh.getBufferList().getArray()) {
+            if (vb != null && vb.isUpdateNeeded()) {
+                // 1. 通知后端作废该 VBO 对应的 GPU 缓存
+                updateBufferData(vb);
+                // 2. 必须清除标记！否则每帧都会重复重建引发严重卡顿
+                vb.clearUpdateNeeded();
+            }
+        }
 
         RendererStateSnapshot snap = stateTracker.createSnapshot();
         DrawCmd dc = drawCmdBuilder.build(mesh, lod, count, instanceData, snap);
-        
+
         if (dc != null) {
             drawQueue.enqueue(dc);
         }
@@ -151,27 +189,51 @@ public final class VKRenderer implements Renderer, VkCommandRecorder {
 
     @Override
     public void modifyTexture(Texture tex, Image pixels, int x, int y) {
-        if (tex == null) return;
-        if (pixels != null) tex.setImage(pixels);
-        try { runtime.invalidateVkTexture(tex); } catch (Throwable ignored) {}
+        if (tex == null) {
+            return;
+        }
+        if (pixels != null) {
+            tex.setImage(pixels);
+        }
+        try {
+            runtime.invalidateVkTexture(tex);
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override
     public void deleteImage(Image image) {
-        if (image == null) return;
-        try { runtime.invalidateVkTextureByImage(image); } catch (Throwable ignored) {}
+        if (image == null) {
+            return;
+        }
+        try {
+            runtime.invalidateVkTextureByImage(image);
+        } catch (Throwable ignored) {
+        }
     }
 
     @Override
     public void updateBufferData(VertexBuffer vb) {
-        if (vb == null) return;
-        try { runtime.invalidateMeshGpuByVertexBuffer(vb); } catch (Throwable ignored) { runtime.invalidateAllMeshGpu(); }
+        if (vb == null) {
+            return;
+        }
+        try {
+            runtime.invalidateMeshGpuByVertexBuffer(vb);
+        } catch (Throwable ignored) {
+            runtime.invalidateAllMeshGpu();
+        }
     }
 
     @Override
     public void deleteBuffer(VertexBuffer vb) {
-        if (vb == null) return;
-        try { runtime.invalidateMeshGpuByVertexBuffer(vb); } catch (Throwable ignored) { runtime.invalidateAllMeshGpu(); }
+        if (vb == null) {
+            return;
+        }
+        try {
+            runtime.invalidateMeshGpuByVertexBuffer(vb);
+        } catch (Throwable ignored) {
+            runtime.invalidateAllMeshGpu();
+        }
     }
 
     @Override
@@ -182,63 +244,195 @@ public final class VKRenderer implements Renderer, VkCommandRecorder {
         if (drawExecutor != null) {
             drawExecutor.cleanup();
         }
-        
+
         drawCmdBuilder = null;
         drawExecutor = null;
         frameRecorder = null;
         initialized = false;
     }
 
-
     public void discardPendingDraws() {
         drawQueue.clear();
     }
 
     // --- State Tracker 代理委派 ---
-    @Override public void clearBuffers(boolean color, boolean depth, boolean stencil) { stateTracker.setClearBuffers(color, depth, stencil); }
-    @Override public void setBackgroundColor(ColorRGBA color) { stateTracker.setBackgroundColor(color); }
-    @Override public void applyRenderState(RenderState state) { stateTracker.applyRenderState(state); }
-    @Override public void setViewPort(int x, int y, int width, int height) { stateTracker.setViewPort(x, y, width, height); }
-    @Override public void setClipRect(int x, int y, int width, int height) { stateTracker.setClipRect(x, y, width, height); }
-    @Override public void clearClipRect() { stateTracker.clearClipRect(); }
-    @Override public void setShader(Shader shader) { stateTracker.setShader(shader); }
-    @Override public void setFrameBuffer(FrameBuffer fb) { stateTracker.setFrameBuffer(fb); }
-    @Override public FrameBuffer getCurrentFrameBuffer() { return stateTracker.getCurrentFb(); }
-    @Override public void setTexture(int unit, Texture tex) throws TextureUnitException { stateTracker.setTexture(unit, tex); }
+    @Override
+    public void clearBuffers(boolean color, boolean depth, boolean stencil) {
+        stateTracker.setClearBuffers(color, depth, stencil);
+    }
+
+    @Override
+    public void setBackgroundColor(ColorRGBA color) {
+        stateTracker.setBackgroundColor(color);
+    }
+
+    @Override
+    public void applyRenderState(RenderState state) {
+        stateTracker.applyRenderState(state);
+    }
+
+    @Override
+    public void setViewPort(int x, int y, int width, int height) {
+        stateTracker.setViewPort(x, y, width, height);
+    }
+
+    @Override
+    public void setClipRect(int x, int y, int width, int height) {
+        stateTracker.setClipRect(x, y, width, height);
+    }
+
+    @Override
+    public void clearClipRect() {
+        stateTracker.clearClipRect();
+    }
+
+    @Override
+    public void setShader(Shader shader) {
+        stateTracker.setShader(shader);
+    }
+
+    @Override
+    public void setFrameBuffer(FrameBuffer fb) {
+        stateTracker.setFrameBuffer(fb);
+    }
+
+    @Override
+    public FrameBuffer getCurrentFrameBuffer() {
+        return stateTracker.getCurrentFb();
+    }
+
+    @Override
+    public void setTexture(int unit, Texture tex) throws TextureUnitException {
+        stateTracker.setTexture(unit, tex);
+    }
 
     // --- 空实现或未支持的方法 ---
-    @Override public void invalidateState() {}
-    @Override public void setDepthRange(float start, float end) {}
-    @Override public void postFrame() {}
-    @Override public void deleteShader(Shader shader) {}
-    @Override public void deleteShaderSource(Shader.ShaderSource source) {}
-    @Override public void copyFrameBuffer(FrameBuffer src, FrameBuffer dst, boolean copyDepth) {}
-    @Override public void copyFrameBuffer(FrameBuffer src, FrameBuffer dst, boolean copyColor, boolean copyDepth) {}
-    @Override public void setMainFrameBufferOverride(FrameBuffer fb) {}
-    @Override public void readFrameBuffer(FrameBuffer fb, ByteBuffer byteBuf) {}
-    @Override public void readFrameBufferWithFormat(FrameBuffer fb, ByteBuffer byteBuf, Image.Format format) {}
-    @Override public void deleteFrameBuffer(FrameBuffer fb) {}
-    public void updateBufferData(BufferObject bo) {}
-    @Override public void deleteBuffer(BufferObject bo) {}
-    
-    @Override public void popDebugGroup() { }
-    @Override public void pushDebugGroup(String name) { }
-    
-    @Override public void resetGLObjects() {}
-    @Override public void setDefaultAnisotropicFilter(int level) {}
-    @Override public void setAlphaToCoverage(boolean value) {}
-    @Override public void setMainFrameBufferSrgb(boolean srgb) {}
-    @Override public void setLinearizeSrgbImages(boolean linearize) {}
-    @Override public int[] generateProfilingTasks(int numTasks) { return new int[0]; }
-    @Override public void startProfiling(int taskId) {}
-    @Override public void stopProfiling() {}
-    @Override public long getProfilingTime(int taskId) { return 0; }
-    @Override public boolean isTaskResultAvailable(int taskId) { return false; }
-    @Override public boolean getAlphaToCoverage() { return false; }
-    @Override public int getDefaultAnisotropicFilter() { return 0; }
-    @Override public float getMaxLineWidth() { return 1.0f; }
-    @Override public boolean isLinearizeSrgbImages() { return false; }
-    @Override public boolean isMainFrameBufferSrgb() { return false; }
+    @Override
+    public void invalidateState() {
+    }
+
+    @Override
+    public void setDepthRange(float start, float end) {
+    }
+
+    @Override
+    public void postFrame() {
+    }
+
+    @Override
+    public void deleteShader(Shader shader) {
+    }
+
+    @Override
+    public void deleteShaderSource(Shader.ShaderSource source) {
+    }
+
+    @Override
+    public void copyFrameBuffer(FrameBuffer src, FrameBuffer dst, boolean copyDepth) {
+    }
+
+    @Override
+    public void copyFrameBuffer(FrameBuffer src, FrameBuffer dst, boolean copyColor, boolean copyDepth) {
+    }
+
+    @Override
+    public void setMainFrameBufferOverride(FrameBuffer fb) {
+    }
+
+    @Override
+    public void readFrameBuffer(FrameBuffer fb, ByteBuffer byteBuf) {
+    }
+
+    @Override
+    public void readFrameBufferWithFormat(FrameBuffer fb, ByteBuffer byteBuf, Image.Format format) {
+    }
+
+    @Override
+    public void deleteFrameBuffer(FrameBuffer fb) {
+    }
+
+    public void updateBufferData(BufferObject bo) {
+    }
+
+    @Override
+    public void deleteBuffer(BufferObject bo) {
+    }
+
+    @Override
+    public void popDebugGroup() {
+    }
+
+    @Override
+    public void pushDebugGroup(String name) {
+    }
+
+    @Override
+    public void resetGLObjects() {
+    }
+
+    @Override
+    public void setDefaultAnisotropicFilter(int level) {
+    }
+
+    @Override
+    public void setAlphaToCoverage(boolean value) {
+    }
+
+    @Override
+    public void setMainFrameBufferSrgb(boolean srgb) {
+    }
+
+    @Override
+    public void setLinearizeSrgbImages(boolean linearize) {
+    }
+
+    @Override
+    public int[] generateProfilingTasks(int numTasks) {
+        return new int[0];
+    }
+
+    @Override
+    public void startProfiling(int taskId) {
+    }
+
+    @Override
+    public void stopProfiling() {
+    }
+
+    @Override
+    public long getProfilingTime(int taskId) {
+        return 0;
+    }
+
+    @Override
+    public boolean isTaskResultAvailable(int taskId) {
+        return false;
+    }
+
+    @Override
+    public boolean getAlphaToCoverage() {
+        return false;
+    }
+
+    @Override
+    public int getDefaultAnisotropicFilter() {
+        return 0;
+    }
+
+    @Override
+    public float getMaxLineWidth() {
+        return 1.0f;
+    }
+
+    @Override
+    public boolean isLinearizeSrgbImages() {
+        return false;
+    }
+
+    @Override
+    public boolean isMainFrameBufferSrgb() {
+        return false;
+    }
 
     @Override
     public void setTextureImage(int unit, TextureImage tex) throws TextureUnitException {

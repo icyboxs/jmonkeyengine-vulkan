@@ -10,6 +10,7 @@ import com.jme3.renderer.vulkan.VulkanRuntime;
 import com.jme3.renderer.vulkan.pipeline.VkPipelineKey;
 import com.jme3.renderer.vulkan.pipeline.VkVariantKey;
 import com.jme3.renderer.vulkan.reflection.ParamBindingPlan;
+import com.jme3.renderer.vulkan.resource.VkUboLayout;
 import com.jme3.scene.Mesh;
 import com.jme3.scene.VertexBuffer;
 import com.jme3.shader.Shader;
@@ -26,12 +27,8 @@ public final class DrawCmdBuilder {
     private static final Logger LOGGER = Logger.getLogger(DrawCmdBuilder.class.getName());
     private final VulkanRuntime runtime;
 
-    // =========================================================================
-    // 【核心优化 1】基于 Shader 实例的源码与 Hash 前置缓存
-    // 避免在渲染热路径（Hot Path）中每帧进行 String 拼接和 hashCode() 计算。
-    // 使用 WeakHashMap 确保当 Shader 被 JME 卸载时，缓存能自动释放防止内存泄漏。
-    // =========================================================================
     private static final class CachedShaderData {
+
         final String vertSrc;
         final String fragSrc;
         final String vertDefines;
@@ -42,7 +39,7 @@ public final class DrawCmdBuilder {
         final int fragHash;
 
         CachedShaderData(String vertSrc, String fragSrc, String vertDefines, String fragDefines,
-                         String finalVertSrc, String finalFragSrc, int vertHash, int fragHash) {
+                String finalVertSrc, String finalFragSrc, int vertHash, int fragHash) {
             this.vertSrc = vertSrc;
             this.fragSrc = fragSrc;
             this.vertDefines = vertDefines;
@@ -54,15 +51,10 @@ public final class DrawCmdBuilder {
         }
     }
     private final WeakHashMap<Shader, CachedShaderData> shaderCache = new WeakHashMap<>();
-
-    // =========================================================================
-    // 【核心优化 2】贴图参数名映射的运行时缓存
-    // 建立 Vulkan 标准化名称 (如 "colormap") 到 JME 原生名称 (如 "ColorMap") 的 O(1) 映射。
-    // 彻底消灭 ParamBindingPlan.normalizeParamName 在每帧的 String 截取和转小写开销。
-    // =========================================================================
     private static final ConcurrentHashMap<String, String> PARAM_NAME_CACHE = new ConcurrentHashMap<>();
 
     private static final class ExtractedShaderSources {
+
         final String vertSource;
         final String fragSource;
         final String vertDefines;
@@ -99,8 +91,7 @@ public final class DrawCmdBuilder {
             Shader currentShader, RenderState currentRenderState, Texture currentTex0, Texture currentLight, Texture currentExtra,
             Material currentMaterial, Matrix4f overrideWvp, ColorRGBA overrideColor) {
 
-        DrawCmd dc = new DrawCmd();
-
+        DrawCmd dc = DrawCmd.acquire();
         dc.mesh = mesh;
         dc.lod = lod;
         dc.count = count;
@@ -108,7 +99,6 @@ public final class DrawCmdBuilder {
         dc.objectId = (mesh != null) ? System.identityHashCode(mesh) : 0;
         dc.renderState = currentRenderState;
 
-        // 【应用优化 1】：极速获取 Shader Hash 与最终代码，0 字符串分配
         if (currentShader != null) {
             CachedShaderData csd = shaderCache.get(currentShader);
             if (csd == null) {
@@ -128,11 +118,9 @@ public final class DrawCmdBuilder {
             dc.fragHash = 0;
         }
 
-        dc.wvpSnapshot = new Matrix4f();
         if (overrideWvp != null) {
             dc.wvpSnapshot.set(overrideWvp);
         } else {
-            // 根据 JME 约定，从 Shader 的 Uniform 中提取
             Matrix4f wvp = getMat4Uniform(currentShader, "g_WorldViewProjectionMatrix");
             if (wvp != null) {
                 dc.wvpSnapshot.set(wvp);
@@ -141,7 +129,6 @@ public final class DrawCmdBuilder {
             }
         }
 
-        dc.colorSnapshot = new ColorRGBA();
         if (overrideColor != null) {
             dc.colorSnapshot.set(overrideColor);
         } else {
@@ -157,7 +144,6 @@ public final class DrawCmdBuilder {
         dc.tex0SamplerSnapshot = runtime.chooseSamplerForTex0(dc.useWhiteTex0 ? null : dc.materialResolvePlan.tex0);
         dc.lightSamplerSnapshot = runtime.chooseSamplerForLight(dc.useWhiteLight ? null : dc.materialResolvePlan.light);
 
-        // 提取 ExtraTex，常量字符串字面量查询
         Texture extraTex = resolveTextureByParamName(currentMaterial, "extratex");
         if (!isUsableTex2D(extraTex) && isUsableTex2D(currentExtra)) {
             extraTex = currentExtra;
@@ -173,31 +159,135 @@ public final class DrawCmdBuilder {
         dc.variant = new VkVariantKey(hasColorMap, hasColor, hasLightMap);
 
         if (dc.finalVertSrc != null && dc.finalFragSrc != null) {
+
+            // =========================================================================
+            // 【核心修改】：通过 Mesh 动态计算顶点数据结构掩码
+            // 将每种属性的“分量数量(1~4)”压缩进一个整数中，每 4 位代表一个 Location
+            // =========================================================================
+            int vertexMask = 0;
+            if (mesh != null) {
+                for (int i = 0; i < VkPipelineKey.VERTEX_TYPES.length; i++) {
+                    VertexBuffer.Type type = VkPipelineKey.VERTEX_TYPES[i];
+                    VertexBuffer vb = mesh.getBuffer(type);
+                    if (vb != null) {
+                        vertexMask |= (vb.getNumComponents() & 0xF) << (i * 4);
+                    } else if (type == VertexBuffer.Type.Color) {
+                        // 【兜底保护】预见后续会补充 Color，声明它存在以匹配默认 Shader
+                        vertexMask |= (4 & 0xF) << (i * 4);
+                    } else if (type == VertexBuffer.Type.TexCoord) {
+                        // 【兜底保护】预见后续会补充 TexCoord
+                        vertexMask |= (2 & 0xF) << (i * 4);
+                    }
+                }
+            }
+
             dc.pipelineKey = VkPipelineKey.fromHashes(
-                    dc.vertHash, dc.fragHash, dc.renderState, dc.variant, runtime.getDefaultPassKey()
+                    dc.vertHash, dc.fragHash, dc.renderState, dc.variant, runtime.getDefaultPassKey(), vertexMask
             );
         }
 
         if (dc.pipelineKey != null) {
+            VkUboLayout drawLayout = runtime.getPipelineUboLayout(dc.pipelineKey);
+            if (drawLayout != null && drawLayout.sliceSize > 0 && drawLayout.fields != null) {
+                // 【修改】：直接使用预分配的 dc.uboData 写入
+                for (com.jme3.renderer.vulkan.resource.VkUboLayout.UboField f : drawLayout.fields) {
+                    int idx = f.offset / 4;
+                    if (idx < 0 || idx >= dc.uboData.length) {;
+                        continue;
+                    }
+
+                    if ("g_WorldViewProjectionMatrix".equals(f.name) && dc.wvpSnapshot != null) {
+                        Matrix4f m = dc.wvpSnapshot;
+                        if (idx + 15 < dc.uboData.length) {
+                            dc.uboData[idx] = m.m00;
+                            dc.uboData[idx + 1] = m.m10;
+                            dc.uboData[idx + 2] = m.m20;
+                            dc.uboData[idx + 3] = m.m30;
+                            dc.uboData[idx + 4] = m.m01;
+                            dc.uboData[idx + 5] = m.m11;
+                            dc.uboData[idx + 6] = m.m21;
+                            dc.uboData[idx + 7] = m.m31;
+                            dc.uboData[idx + 8] = m.m02;
+                            dc.uboData[idx + 9] = m.m12;
+                            dc.uboData[idx + 10] = m.m22;
+                            dc.uboData[idx + 11] = m.m32;
+                            dc.uboData[idx + 12] = m.m03;
+                            dc.uboData[idx + 13] = m.m13;
+                            dc.uboData[idx + 14] = m.m23;
+                            dc.uboData[idx + 15] = m.m33;
+                        }
+                        continue;
+                    }
+                    if ("m_Color".equals(f.name) && dc.colorSnapshot != null) {
+                        if (idx + 3 < dc.uboData.length) {
+                            dc.uboData[idx] = dc.colorSnapshot.r;
+                            dc.uboData[idx + 1] = dc.colorSnapshot.g;
+                            dc.uboData[idx + 2] = dc.colorSnapshot.b;
+                            dc.uboData[idx + 3] = dc.colorSnapshot.a;
+                        }
+                        continue;
+                    }
+
+                    if ("g_Resolution".equals(f.name) || "g_Time".equals(f.name) || "g_Mouse".equals(f.name)) {
+                        continue;
+                    }
+
+                    Object val = null;
+                    com.jme3.shader.Uniform u = currentShader != null ? currentShader.getUniform(f.name) : null;
+                    if (u != null && u.getValue() != null) {
+                        val = u.getValue();
+                    } else if (f.name.startsWith("m_") && currentMaterial != null) {
+                        MatParam mp = currentMaterial.getParam(f.name.substring(2));
+                        if (mp != null) {
+                            val = mp.getValue();
+                        }
+                    } else if (currentMaterial != null) {
+                        MatParam mp = currentMaterial.getParam(f.name);
+                        if (mp != null) {
+                            val = mp.getValue();
+                        }
+                    }
+
+                    if (val != null) {
+                        writeValToFloatArray(val, dc.uboData, idx);
+                    }
+                }
+            }
+
             ParamBindingPlan pbp = runtime.getPipelineParamBindingPlan(dc.pipelineKey);
             if (pbp != null && pbp.samplerByName != null && !pbp.samplerByName.isEmpty()) {
-                int size = pbp.samplerByName.size();
-                dc.customImageSlots = new ParamBindingPlan.BindingSlot[size];
-                dc.customImageTextures = new Texture[size];
                 dc.customImageCount = 0;
 
                 for (Map.Entry<String, ParamBindingPlan.BindingSlot> e : pbp.samplerByName.entrySet()) {
-                    String normName = e.getKey(); // 已在解析期规范化，直接复用
+                    if (dc.customImageCount >= 16) {
+                        break; // 防溢出
+                    }
+                    String normName = e.getKey();
                     ParamBindingPlan.BindingSlot slot = e.getValue();
                     Texture tex = resolveTextureByParamName(currentMaterial, normName);
-                    if (!isUsableTex2D(tex) && "extratex".equals(normName) && isUsableTex2D(extraTex)) {
-                        tex = extraTex;
+
+                    if (!isUsableTex2D(tex)) {
+                        if ("colormap".equals(normName) || "diffusemap".equals(normName) || "basecolormap".equals(normName) || "texture".equals(normName)) {
+                            tex = currentTex0;
+                        } else if ("lightmap".equals(normName)) {
+                            tex = currentLight;
+                        } else if ("extratex".equals(normName) || "extramap".equals(normName)) {
+                            tex = currentExtra;
+                        } else {
+                            ParamBindingPlan.BindingSlot firstTexSlot = pbp.getTextureSlot(slot.set);
+                            if (firstTexSlot != null && firstTexSlot.binding == slot.binding) {
+                                if (slot.set == 0) {
+                                    tex = currentTex0;
+                                } else if (slot.set == 1) {
+                                    tex = currentExtra;
+                                }
+                            }
+                        }
                     }
-                    if (tex != null) {
-                        dc.customImageSlots[dc.customImageCount] = slot;
-                        dc.customImageTextures[dc.customImageCount] = tex;
-                        dc.customImageCount++;
-                    }
+
+                    dc.customImageSlots[dc.customImageCount] = slot;
+                    dc.customImageTextures[dc.customImageCount] = tex;
+                    dc.customImageCount++;
                 }
             }
         }
@@ -215,18 +305,19 @@ public final class DrawCmdBuilder {
         int vHash = (fVert != null) ? fVert.hashCode() : 0;
         int fHash = (fFrag != null) ? fFrag.hashCode() : 0;
 
-        return new CachedShaderData(
-                extracted.vertSource, extracted.fragSource, 
-                extracted.vertDefines, extracted.fragDefines,
-                fVert, fFrag, vHash, fHash
-        );
+        return new CachedShaderData(extracted.vertSource, extracted.fragSource,
+                extracted.vertDefines, extracted.fragDefines, fVert, fFrag, vHash, fHash);
     }
 
     private static ExtractedShaderSources extractShaderSources(Shader shader) {
-        if (shader == null || shader.getSources() == null) return null;
+        if (shader == null || shader.getSources() == null) {
+            return null;
+        }
         String vert = null, frag = null, vertDefines = null, fragDefines = null;
         for (Shader.ShaderSource ss : shader.getSources()) {
-            if (ss == null) continue;
+            if (ss == null) {
+                continue;
+            }
             if (ss.getType() == Shader.ShaderType.Vertex) {
                 vert = ss.getSource();
                 vertDefines = ss.getDefines();
@@ -235,16 +326,24 @@ public final class DrawCmdBuilder {
                 fragDefines = ss.getDefines();
             }
         }
-        if (vert == null || frag == null) return null;
+        if (vert == null || frag == null) {
+            return null;
+        }
         return new ExtractedShaderSources(vert, frag, vertDefines, fragDefines);
     }
 
     private static String composeFinalShaderSource(String defines, String source) {
-        if (source == null) return null;
+        if (source == null) {
+            return null;
+        }
         String d = normalizeShaderChunk(defines);
         String s = normalizeShaderChunk(source);
-        if (d.isEmpty()) return s;
-        if (s.isEmpty()) return d;
+        if (d.isEmpty()) {
+            return s;
+        }
+        if (s.isEmpty()) {
+            return d;
+        }
 
         int versionLineEnd = findLeadingVersionDirectiveLineEnd(s);
         if (versionLineEnd >= 0) {
@@ -252,40 +351,61 @@ public final class DrawCmdBuilder {
             String restPart = s.substring(versionLineEnd);
             StringBuilder out = new StringBuilder(s.length() + d.length() + 8);
             out.append(firstPart);
-            if (!firstPart.endsWith("\n")) out.append('\n');
+            if (!firstPart.endsWith("\n")) {
+                out.append('\n');
+            }
             out.append(d);
-            if (!d.endsWith("\n")) out.append('\n');
+            if (!d.endsWith("\n")) {
+                out.append('\n');
+            }
             out.append(restPart);
             return out.toString();
         } else {
             StringBuilder out = new StringBuilder(s.length() + d.length() + 8);
             out.append(d);
-            if (!d.endsWith("\n")) out.append('\n');
+            if (!d.endsWith("\n")) {
+                out.append('\n');
+            }
             out.append(s);
             return out.toString();
         }
     }
 
     private static String normalizeShaderChunk(String s) {
-        if (s == null || s.isEmpty()) return "";
+        if (s == null || s.isEmpty()) {
+            return "";
+        }
         String out = s.replace("\r\n", "\n").replace('\r', '\n');
-        if (!out.isEmpty() && out.charAt(0) == '\ufeff') out = out.substring(1);
+        if (!out.isEmpty() && out.charAt(0) == '\ufeff') {
+            out = out.substring(1);
+        }
         return out;
     }
 
     private static int findLeadingVersionDirectiveLineEnd(String source) {
-        if (source == null || source.isEmpty()) return -1;
+        if (source == null || source.isEmpty()) {
+            return -1;
+        }
         int len = source.length();
         int i = 0;
         while (i < len) {
             char c = source.charAt(i);
-            if (c == ' ' || c == '\t' || c == '\n') { i++; continue; }
+            if (c == ' ' || c == '\t' || c == '\n') {
+                i++;
+                continue;
+            }
             break;
         }
-        if (i >= len) return -1;
-        if (!source.startsWith("#version", i)) return -1;
+        if (i >= len) {
+            return -1;
+        }
+        if (!source.startsWith("#version", i)) {
+            return -1;
+        }
         int lineEnd = source.indexOf('\n', i);
-        if (lineEnd < 0) return len;
+        if (lineEnd < 0) {
+            return len;
+        }
         return lineEnd + 1;
     }
 
@@ -294,80 +414,91 @@ public final class DrawCmdBuilder {
     }
 
     private static boolean isUsableTex2D(Texture t) {
-        if (t == null) return false;
+        if (t == null) {
+            return false;
+        }
         com.jme3.texture.Image img = t.getImage();
-        if (img == null || img.getWidth() <= 0 || img.getHeight() <= 0) return false;
-        return img.getData(0) != null;
+        return img != null && img.getWidth() > 0 && img.getHeight() > 0;
     }
 
     private static ColorRGBA resolveColorSnapshot(Shader shader) {
-        if (shader == null) return ColorRGBA.White.clone();
+        if (shader == null) {
+            return ColorRGBA.White.clone();
+        }
         com.jme3.shader.Uniform uColor = shader.getUniform("m_Color");
-        if (uColor != null && uColor.getValue() instanceof ColorRGBA) return ((ColorRGBA) uColor.getValue()).clone();
+        if (uColor != null && uColor.getValue() instanceof ColorRGBA) {
+            return ((ColorRGBA) uColor.getValue()).clone();
+        }
         return ColorRGBA.White.clone();
     }
 
     private static boolean hasMaterialColor(Shader shader) {
-        if (shader == null) return false;
+        if (shader == null) {
+            return false;
+        }
         com.jme3.shader.Uniform uColor = shader.getUniform("m_Color");
         return uColor != null && (uColor.getValue() instanceof ColorRGBA);
     }
 
     private static Matrix4f getMat4Uniform(Shader shader, String name) {
-        if (shader == null) return null;
+        if (shader == null) {
+            return null;
+        }
         com.jme3.shader.Uniform u = shader.getUniform(name);
-        if (u == null) return null;
-        if (u.getValue() instanceof Matrix4f) return (Matrix4f) u.getValue();
+        if (u == null) {
+            return null;
+        }
+        if (u.getValue() instanceof Matrix4f) {
+            return (Matrix4f) u.getValue();
+        }
         return null;
     }
 
-    /**
-     * 【应用优化 2】：基于 JME ListMap 和 VarType 的极速参数提取，配合 ConcurrentHashMap
-     */
     private static Texture resolveTextureByParamName(Material mat, String normWanted) {
-        if (mat == null || normWanted == null) return null;
+        if (mat == null || normWanted == null) {
+            return null;
+        }
 
-        // 1. 极速路径：缓存命中，直接以 O(1) 提取真实的 JME 参数名
         String cachedJmeName = PARAM_NAME_CACHE.get(normWanted);
         if (cachedJmeName != null) {
             MatParam p = mat.getParam(cachedJmeName);
             if (p != null) {
                 Texture t = textureFromMatParam(p);
-                if (isUsableTex2D(t)) return t;
+                if (isUsableTex2D(t)) {
+                    return t;
+                }
             }
-            return null;
         }
 
-        // 2. 首次退化路径：基于 JME 的底层 ListMap 做 0 迭代器分配的数组扫描
         ListMap<String, MatParam> paramsMap = mat.getParamsMap();
         int size = paramsMap.size();
         for (int i = 0; i < size; i++) {
             MatParam mp = paramsMap.getValue(i);
-            if (mp == null) continue;
-            
-            // 快速前置剔除：不是纹理类型的参数直接跳过，根本不用提取和判断 Name
+            if (mp == null) {
+                continue;
+            }
             if (mp.getVarType() != null && !mp.getVarType().isTextureType()) {
                 continue;
             }
 
             String paramName = mp.getName();
-            String n = ParamBindingPlan.normalizeParamName(paramName); // 仅在未命中时执行 1 次
-            
+            String n = ParamBindingPlan.normalizeParamName(paramName);
+
             if (normWanted.equals(n)) {
-                // 找到对应关系！记录到静态表，从此这个规范名的匹配变为 O(1)
                 PARAM_NAME_CACHE.put(normWanted, paramName);
                 Texture t = textureFromMatParam(mp);
-                if (isUsableTex2D(t)) return t;
+                if (isUsableTex2D(t)) {
+                    return t;
+                }
             }
         }
         return null;
     }
 
-    /**
-     * 适配 JME3 的 MatParamTexture 结构
-     */
     private static Texture textureFromMatParam(MatParam p) {
-        if (p == null || p.getValue() == null) return null;
+        if (p == null || p.getValue() == null) {
+            return null;
+        }
         if (p instanceof MatParamTexture) {
             return ((MatParamTexture) p).getTextureValue();
         }
@@ -376,5 +507,97 @@ public final class DrawCmdBuilder {
             return (Texture) v;
         }
         return null;
+    }
+
+    private static void writeValToFloatArray(Object val, float[] data, int offset) {
+        if (val instanceof Float) {
+            if (offset < data.length) {
+                data[offset] = (Float) val;
+            }
+        } else if (val instanceof Integer) {
+            if (offset < data.length) {
+                data[offset] = Float.intBitsToFloat((Integer) val);
+            }
+        } else if (val instanceof Boolean) {
+            if (offset < data.length) {
+                data[offset] = Float.intBitsToFloat(((Boolean) val) ? 1 : 0);
+            }
+        } else if (val instanceof com.jme3.math.Vector2f) {
+            com.jme3.math.Vector2f v = (com.jme3.math.Vector2f) val;
+            if (offset + 1 < data.length) {
+                data[offset] = v.x;
+                data[offset + 1] = v.y;
+            }
+        } else if (val instanceof com.jme3.math.Vector3f) {
+            com.jme3.math.Vector3f v = (com.jme3.math.Vector3f) val;
+            if (offset + 2 < data.length) {
+                data[offset] = v.x;
+                data[offset + 1] = v.y;
+                data[offset + 2] = v.z;
+            }
+        } else if (val instanceof com.jme3.math.Vector4f) {
+            com.jme3.math.Vector4f v = (com.jme3.math.Vector4f) val;
+            if (offset + 3 < data.length) {
+                data[offset] = v.x;
+                data[offset + 1] = v.y;
+                data[offset + 2] = v.z;
+                data[offset + 3] = v.w;
+            }
+        } else if (val instanceof ColorRGBA) {
+            ColorRGBA c = (ColorRGBA) val;
+            if (offset + 3 < data.length) {
+                data[offset] = c.r;
+                data[offset + 1] = c.g;
+                data[offset + 2] = c.b;
+                data[offset + 3] = c.a;
+            }
+        } else if (val instanceof Matrix4f) {
+            Matrix4f m = (Matrix4f) val;
+            if (offset + 15 < data.length) {
+                data[offset] = m.m00;
+                data[offset + 1] = m.m10;
+                data[offset + 2] = m.m20;
+                data[offset + 3] = m.m30;
+                data[offset + 4] = m.m01;
+                data[offset + 5] = m.m11;
+                data[offset + 6] = m.m21;
+                data[offset + 7] = m.m31;
+                data[offset + 8] = m.m02;
+                data[offset + 9] = m.m12;
+                data[offset + 10] = m.m22;
+                data[offset + 11] = m.m32;
+                data[offset + 12] = m.m03;
+                data[offset + 13] = m.m13;
+                data[offset + 14] = m.m23;
+                data[offset + 15] = m.m33;
+            }
+        } else if (val instanceof com.jme3.math.Matrix3f) {
+            com.jme3.math.Matrix3f m = (com.jme3.math.Matrix3f) val;
+            if (offset + 11 < data.length) {
+                data[offset] = m.get(0, 0);
+                data[offset + 1] = m.get(1, 0);
+                data[offset + 2] = m.get(2, 0);
+                data[offset + 4] = m.get(0, 1);
+                data[offset + 5] = m.get(1, 1);
+                data[offset + 6] = m.get(2, 1);
+                data[offset + 8] = m.get(0, 2);
+                data[offset + 9] = m.get(1, 2);
+                data[offset + 10] = m.get(2, 2);
+            }
+        } else if (val instanceof java.nio.FloatBuffer) {
+            java.nio.FloatBuffer fb = (java.nio.FloatBuffer) val;
+            int pos = fb.position();
+            int len = Math.min(fb.remaining(), data.length - offset);
+            for (int i = 0; i < len; i++) {
+                data[offset + i] = fb.get(pos + i);
+            }
+        } else if (val instanceof java.nio.IntBuffer) {
+            java.nio.IntBuffer ib = (java.nio.IntBuffer) val;
+            int pos = ib.position();
+            int len = Math.min(ib.remaining(), data.length - offset);
+            for (int i = 0; i < len; i++) {
+                data[offset + i] = Float.intBitsToFloat(ib.get(pos + i));
+            }
+        }
     }
 }

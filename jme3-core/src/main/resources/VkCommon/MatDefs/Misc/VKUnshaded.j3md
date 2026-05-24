@@ -66,8 +66,8 @@ MaterialDef Unshaded {
     }
 
     Technique {
-        VertexShader   Vulkan GLSL310 GLSL300 GLSL150 GLSL100 :   Common/MatDefs/Misc/VKUnshaded.vert
-        FragmentShader Vulkan GLSL310 GLSL300 GLSL150 GLSL100 : Common/MatDefs/Misc/VKUnshaded.frag
+        VertexShader   Vulkan GLSL310 GLSL300 GLSL150 GLSL100 :   VkCommon/MatDefs/Misc/VKUnshaded.vert
+        FragmentShader Vulkan GLSL310 GLSL300 GLSL150 GLSL100 : VkCommon/MatDefs/Misc/VKUnshaded.frag
 
         WorldParameters {
             WorldViewProjectionMatrix
@@ -94,8 +94,8 @@ MaterialDef Unshaded {
 
     Technique PreNormalPass {
 
-        VertexShader  Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   Common/MatDefs/SSAO/VKnormal.vert
-        FragmentShader Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   Common/MatDefs/SSAO/VKnormal.frag
+        VertexShader  Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   VkCommon/MatDefs/SSAO/VKnormal.vert
+        FragmentShader Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   VkCommon/MatDefs/SSAO/VKnormal.frag
 
         WorldParameters {
             WorldViewProjectionMatrix
@@ -117,8 +117,8 @@ MaterialDef Unshaded {
 
     Technique PreShadow {
 
-        VertexShader   Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   Common/MatDefs/Shadow/VKPreShadow.vert
-        FragmentShader Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   Common/MatDefs/Shadow/VKPreShadow.frag
+        VertexShader   Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   VkCommon/MatDefs/Shadow/VKPreShadow.vert
+        FragmentShader Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   VkCommon/MatDefs/Shadow/VKPreShadow.frag
 
         WorldParameters {
             WorldViewProjectionMatrix
@@ -149,8 +149,8 @@ MaterialDef Unshaded {
 
 
     Technique PostShadow {
-        VertexShader    Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   Common/MatDefs/Shadow/VKPostShadow.vert
-        FragmentShader  Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   Common/MatDefs/Shadow/VKPostShadow.frag
+        VertexShader    Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   VkCommon/MatDefs/Shadow/VKPostShadow.vert
+        FragmentShader  Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   VkCommon/MatDefs/Shadow/VKPostShadow.frag
 
         WorldParameters {
             WorldViewProjectionMatrix
@@ -186,8 +186,8 @@ MaterialDef Unshaded {
 
     Technique Glow {
 
-        VertexShader   Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   Common/MatDefs/Misc/VKUnshaded.vert
-        FragmentShader Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   Common/MatDefs/Light/VKGlow.frag
+        VertexShader   Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   VkCommon/MatDefs/Misc/VKUnshaded.vert
+        FragmentShader Vulkan GLSL310 GLSL300 GLSL150 GLSL100:   VkCommon/MatDefs/Light/VKGlow.frag
 
         WorldParameters {
             WorldViewProjectionMatrix

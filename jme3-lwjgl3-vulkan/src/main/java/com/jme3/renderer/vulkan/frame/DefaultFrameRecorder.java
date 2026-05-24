@@ -15,6 +15,7 @@ import static org.lwjgl.vulkan.VK10.*;
 
 /**
  * 统筹一帧画面的录制生命周期。
+ *
  * @author icyboxs
  */
 public final class DefaultFrameRecorder implements VkCommandRecorder {
@@ -49,14 +50,32 @@ public final class DefaultFrameRecorder implements VkCommandRecorder {
             int vw = (vpW > 0 && vpH > 0) ? vpW : fbW;
             int vh = (vpW > 0 && vpH > 0) ? vpH : fbH;
 
-            if (vx < 0) { vw += vx; vx = 0; }
-            if (vy < 0) { vh += vy; vy = 0; }
-            if (vx > fbW) vx = fbW;
-            if (vy > fbH) vy = fbH;
-            if (vx + vw > fbW) vw = fbW - vx;
-            if (vy + vh > fbH) vh = fbH - vy;
-            if (vw < 1) vw = 1;
-            if (vh < 1) vh = 1;
+            if (vx < 0) {
+                vw += vx;
+                vx = 0;
+            }
+            if (vy < 0) {
+                vh += vy;
+                vy = 0;
+            }
+            if (vx > fbW) {
+                vx = fbW;
+            }
+            if (vy > fbH) {
+                vy = fbH;
+            }
+            if (vx + vw > fbW) {
+                vw = fbW - vx;
+            }
+            if (vy + vh > fbH) {
+                vh = fbH - vy;
+            }
+            if (vw < 1) {
+                vw = 1;
+            }
+            if (vh < 1) {
+                vh = 1;
+            }
 
             float vkVpX = (float) vx;
             float vkVpY = (float) (fbH - vy);
@@ -70,21 +89,43 @@ public final class DefaultFrameRecorder implements VkCommandRecorder {
             int sx, sy, sw, sh;
             if (stateTracker.isClipEnabled()) {
                 sx = stateTracker.getClipX();
-                sy = stateTracker.getClipY();
                 sw = stateTracker.getClipW();
                 sh = stateTracker.getClipH();
+                // 必须翻转 Y 坐标！
+                sy = fbH - stateTracker.getClipY() - sh;
             } else {
-                sx = vx; sy = vy; sw = vw; sh = vh;
+                sx = vx;
+                sy = vy;
+                sw = vw;
+                sh = vh;
             }
 
-            if (sx < 0) { sw += sx; sx = 0; }
-            if (sy < 0) { sh += sy; sy = 0; }
-            if (sx > fbW) sx = fbW;
-            if (sy > fbH) sy = fbH;
-            if (sx + sw > fbW) sw = fbW - sx;
-            if (sy + sh > fbH) sh = fbH - sy;
-            if (sw < 0) sw = 0;
-            if (sh < 0) sh = 0;
+            if (sx < 0) {
+                sw += sx;
+                sx = 0;
+            }
+            if (sy < 0) {
+                sh += sy;
+                sy = 0;
+            }
+            if (sx > fbW) {
+                sx = fbW;
+            }
+            if (sy > fbH) {
+                sy = fbH;
+            }
+            if (sx + sw > fbW) {
+                sw = fbW - sx;
+            }
+            if (sy + sh > fbH) {
+                sh = fbH - sy;
+            }
+            if (sw < 0) {
+                sw = 0;
+            }
+            if (sh < 0) {
+                sh = 0;
+            }
 
             VkRect2D.Buffer sc = VkRect2D.calloc(1, stack);
             sc.offset().set(sx, sy);
@@ -130,8 +171,9 @@ public final class DefaultFrameRecorder implements VkCommandRecorder {
             vkCmdSetViewport(cmd, 0, vp);
             vkCmdSetScissor(cmd, 0, sc);
 
-            // 执行绘制
-            drawExecutor.execute(cmd, stack, frameIndex, frame, drawQueue);
+            //在同一个 RenderPass 中，先画 Opaque，再画 GUI
+            drawExecutor.executeList(cmd, stack, frameIndex, frame, drawQueue.getOpaqueCommands());
+            drawExecutor.executeList(cmd, stack, frameIndex, frame, drawQueue.getGuiCommands());
 
             vkCmdEndRenderingKHR(cmd);
 

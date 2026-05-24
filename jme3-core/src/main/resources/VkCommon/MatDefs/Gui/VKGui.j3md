@@ -8,8 +8,8 @@ MaterialDef Default GUI {
     }
 
     Technique {
-        VertexShader GLSL300 GLSL150 GLSL100:   Common/MatDefs/Gui/Gui.vert
-        FragmentShader GLSL300 GLSL150 GLSL100: Common/MatDefs/Gui/Gui.frag
+        VertexShader Vulkan GLSL300 GLSL150 GLSL100:   VkCommon/MatDefs/Gui/VKGui.vert
+        FragmentShader Vulkan GLSL300 GLSL150 GLSL100: VkCommon/MatDefs/Gui/VKGui.frag
 
         WorldParameters {
             WorldViewProjectionMatrix

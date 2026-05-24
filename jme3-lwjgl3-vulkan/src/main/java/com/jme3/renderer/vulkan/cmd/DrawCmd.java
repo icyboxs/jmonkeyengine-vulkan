@@ -12,37 +12,66 @@ import com.jme3.texture.Texture;
 
 public final class DrawCmd {
 
+    // 【核心优化】：对象池化，杜绝运行时 new
+    private static final DrawCmd[] POOL = new DrawCmd[65536];
+    private static int poolPtr = -1;
+
+    public static DrawCmd acquire() {
+        synchronized (POOL) {
+            if (poolPtr >= 0) {
+                return POOL[poolPtr--];
+            }
+        }
+        return new DrawCmd();
+    }
+
+    public void recycle() {
+        mesh = null;
+        instanceData = null;
+        renderState = null;
+        vertSrc = null;
+        fragSrc = null;
+        finalVertSrc = null;
+        finalFragSrc = null;
+        jmeTex0Snapshot = null;
+        jmeLightSnapshot = null;
+        jmeExtraSnapshot = null;
+        materialKeySnapshot = null;
+        materialResolvePlan = null;
+        variant = null;
+        pipelineKey = null;
+        materialBatchKey = null;
+        for (int i = 0; i < customImageCount; i++) {
+            customImageSlots[i] = null;
+            customImageTextures[i] = null;
+        }
+        customImageCount = 0;
+
+        synchronized (POOL) {
+            if (poolPtr < POOL.length - 1) {
+                POOL[++poolPtr] = this;
+            }
+        }
+    }
+
     public Mesh mesh;
     public int lod;
     public int count;
     public VertexBuffer[] instanceData;
     public RenderState renderState;
 
-    /** ShaderSource.getSource() 主体源码 */
-    public String vertSrc;
-    public String fragSrc;
+    public String vertSrc, fragSrc, vertDefines, fragDefines, finalVertSrc, finalFragSrc;
+    public int vertHash, fragHash;
 
-    /** ShaderSource.getDefines()，由前端生成的 define/prologue */
-    public String vertDefines;
-    public String fragDefines;
-
-    /** 真正送去 Vulkan 编译的最终源码 = defines + source */
-    public String finalVertSrc;
-    public String finalFragSrc;
-
-    /** hash 必须基于最终编译输入，而不是仅主体源码 */
-    public int vertHash;
-    public int fragHash;
-
-    public Texture jmeTex0Snapshot;
-    public Texture jmeLightSnapshot;
+    public Texture jmeTex0Snapshot, jmeLightSnapshot, jmeExtraSnapshot;
     public MaterialSnapshotKey materialKeySnapshot;
     public MaterialResolvePlan materialResolvePlan;
-    public boolean useWhiteTex0;
-    public boolean useWhiteLight;
+    public boolean useWhiteTex0, useWhiteLight, useWhiteExtra;
 
-    public Matrix4f wvpSnapshot;
-    public ColorRGBA colorSnapshot;
+    // 【优化】：定长预分配内存，拒绝 new
+    public final Matrix4f wvpSnapshot = new Matrix4f();
+    public final ColorRGBA colorSnapshot = new ColorRGBA();
+    public final float[] uboData = new float[256];
 
     public VkVariantKey variant;
     public VkPipelineKey pipelineKey;
@@ -50,30 +79,18 @@ public final class DrawCmd {
     public int uboDynamicOffset;
     public MaterialBatchKey materialBatchKey;
     public int objectId;
+    public int submissionIndex;
 
-    public long tex0SamplerSnapshot;
-    public long lightSamplerSnapshot;
+    // 【极速比较】：数字排序键，取代 O(N) 属性比较
+    public long sortKey;
 
-    public Texture jmeExtraSnapshot;
-    public boolean useWhiteExtra;
-    public long extraSamplerSnapshot;
+    public long tex0SamplerSnapshot, lightSamplerSnapshot, extraSamplerSnapshot;
 
-    public ParamBindingPlan.BindingSlot[] customImageSlots;
-    public Texture[] customImageTextures;
-    public int customImageCount;
+    public final ParamBindingPlan.BindingSlot[] customImageSlots = new ParamBindingPlan.BindingSlot[16];
+    public final Texture[] customImageTextures = new Texture[16];
+    public int customImageCount = 0;
 
     public boolean isRenderable() {
-        return pipelineKey != null
-                && mesh != null
-                && finalVertSrc != null
-                && finalFragSrc != null;
-    }
-
-    @Override
-    public String toString() {
-        return "DrawCmd{mesh=" + (mesh != null ? mesh.getId() : -1)
-                + ", objectId=" + objectId
-                + ", pipelineKey=" + (pipelineKey != null ? pipelineKey.hashCode() : 0)
-                + '}';
+        return pipelineKey != null && mesh != null && finalVertSrc != null && finalFragSrc != null;
     }
 }

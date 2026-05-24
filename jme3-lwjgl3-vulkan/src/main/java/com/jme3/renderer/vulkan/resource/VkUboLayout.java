@@ -2,84 +2,97 @@ package com.jme3.renderer.vulkan.resource;
 
 import com.jme3.renderer.vulkan.reflection.VkReflectionResult;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 描述 UBO slice 内部成员的 byte offset。
+ * 全面支持任意着色器自定义变量（全动态数据驱动）。
  */
 public final class VkUboLayout {
 
-    public final int offWvp;        // mat4
-    public final int offColor;      // vec4
-    public final int offResolution; // vec4
-    public final int offMouse;      // vec4
-    public final int offTime;       // vec4
+    public static final class UboField {
+        public final String name;
+        public final int offset;
+        public final int size;
 
+        public UboField(String name, int offset, int size) {
+            this.name = name;
+            this.offset = offset;
+            this.size = size;
+        }
+    }
+
+    public final UboField[] fields;
     public final int sliceSize;     // aligned slice size (bytes)
 
-    public VkUboLayout(int offWvp,
-                       int offColor,
-                       int offResolution,
-                       int offMouse,
-                       int offTime,
-                       int sliceSize) {
-        this.offWvp = offWvp;
-        this.offColor = offColor;
-        this.offResolution = offResolution;
-        this.offMouse = offMouse;
-        this.offTime = offTime;
+    // 系统保留高频变量偏移量
+    public final int offResolution;
+    public final int offTime;
+
+    public VkUboLayout(UboField[] fields, int sliceSize, int offResolution, int offTime) {
+        this.fields = fields;
         this.sliceSize = sliceSize;
+        this.offResolution = offResolution;
+        this.offTime = offTime;
     }
 
     public static VkUboLayout empty() {
-        return new VkUboLayout(-1, -1, -1, -1, -1, 16);
+        return new VkUboLayout(new UboField[0], 16, -1, -1);
     }
 
     public static VkUboLayout fixedStage1() {
         return new VkUboLayout(
-                0,    // g_WorldViewProjectionMatrix
-                64,   // m_Color
-                80,   // g_Resolution
-                96,   // g_Mouse
-                112,  // g_Time
-                256
+            new UboField[]{
+                new UboField("g_WorldViewProjectionMatrix", 0, 64),
+                new UboField("m_Color", 64, 16),
+                new UboField("g_Resolution", 80, 16),
+                new UboField("g_Mouse", 96, 16),
+                new UboField("g_Time", 112, 16)
+            },
+            256, 80, 112
         );
     }
 
     /**
-     * 
-     * 尽量从反射结果推导 UBO layout。如果找不到关键的 WVP，必须回退到 fixedStage1，
-     * 否则 MVP 矩阵无法写入，会导致黑屏。
+     * 将 Shader 中的任意 UBO 成员收集为动态蓝图。
      */
     public static VkUboLayout fromReflection(VkReflectionResult rr) {
         if (rr == null || rr.uboMembers == null || rr.uboMembers.isEmpty()) {
             return fixedStage1();
         }
 
-        int wvp = -1, color = -1, res = -1, mouse = -1, time = -1;
         int maxEnd = 0;
+        int offRes = -1;
+        int offTime = -1;
+        boolean hasWvp = false;
+        
+        List<UboField> fieldList = new ArrayList<>();
 
         for (VkReflectionResult.UboMember m : rr.uboMembers) {
             if (m == null || m.memberName == null) continue;
 
             String n = m.memberName;
-            if ("g_WorldViewProjectionMatrix".equals(n)) wvp = m.offset;
-            else if ("m_Color".equals(n)) color = m.offset;
-            else if ("g_Resolution".equals(n)) res = m.offset;
-            else if ("g_Mouse".equals(n)) mouse = m.offset;
-            else if ("g_Time".equals(n)) time = m.offset;
-
             int size = (m.size > 0) ? m.size : 16;
+            
+            if ("g_WorldViewProjectionMatrix".equals(n)) hasWvp = true;
+            else if ("g_Resolution".equals(n)) offRes = m.offset;
+            else if ("g_Time".equals(n)) offTime = m.offset;
+
+            // 无差别记录所有反射出的变量坐标
+            fieldList.add(new UboField(n, m.offset, size));
+
             maxEnd = Math.max(maxEnd, m.offset + size);
         }
 
-        //如果没找到 WVP 或 Color，说明反射库丢信息了，强制用兜底偏移
-        if (wvp == -1 || color == -1) {
+        if (!hasWvp) {
             return fixedStage1();
         }
 
         int rawSize = Math.max(maxEnd, 256);
         int slice = alignUp(rawSize, 256);
 
-        return new VkUboLayout(wvp, color, res, mouse, time, slice);
+        return new VkUboLayout(fieldList.toArray(new UboField[0]), slice, offRes, offTime);
     }
 
     private static int alignUp(int v, int a) {
@@ -89,12 +102,6 @@ public final class VkUboLayout {
 
     @Override
     public String toString() {
-        return "VkUboLayout{WVP=" + offWvp
-                + ", Color=" + offColor
-                + ", Res=" + offResolution
-                + ", Mouse=" + offMouse
-                + ", Time=" + offTime
-                + ", sliceSize=" + sliceSize
-                + "}";
+        return "VkUboLayout{fields=" + fields.length + ", sliceSize=" + sliceSize + "}";
     }
 }
