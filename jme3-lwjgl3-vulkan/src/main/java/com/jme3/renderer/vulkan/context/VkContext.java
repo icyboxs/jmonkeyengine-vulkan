@@ -39,7 +39,10 @@ public final class VkContext {
 
     VkPhysicalDeviceMemoryProperties memProperties;
 
-    int colorFormat;
+// --- 把 colorFormat 拆分为两种空间 ---
+    private int colorFormatUnorm = VK_FORMAT_UNDEFINED;
+    private int colorFormatSrgb = VK_FORMAT_UNDEFINED;
+
     int colorSpace;
     int depthFormat;
 
@@ -53,6 +56,11 @@ public final class VkContext {
     // 在 VkContext 类中添加字段
     private long vmaAllocator = VK_NULL_HANDLE;
 
+    private float maxSamplerAnisotropy = 1.0f;
+    private boolean samplerAnisotropyEnabled = false;
+
+    public float maxSamplerAnisotropy() { return maxSamplerAnisotropy; }
+    public boolean isSamplerAnisotropyEnabled() { return samplerAnisotropyEnabled; }
     // 添加获取方法
     public long vmaAllocator() {
         return vmaAllocator;
@@ -180,7 +188,19 @@ public final class VkContext {
             VkPhysicalDeviceProperties props = VkPhysicalDeviceProperties.calloc();
             vkGetPhysicalDeviceProperties(physicalDevice, props);
             minUniformBufferOffsetAlignment = props.limits().minUniformBufferOffsetAlignment();
+            //查询硬件允许的最大各向异性过滤倍数
+            maxSamplerAnisotropy = props.limits().maxSamplerAnisotropy();
             props.free();
+
+            //检查设备是否支持各向异性过滤并记录
+            VkPhysicalDeviceFeatures supportedFeatures = VkPhysicalDeviceFeatures.calloc(stack);
+            vkGetPhysicalDeviceFeatures(physicalDevice, supportedFeatures);
+
+            VkPhysicalDeviceFeatures enabledFeatures = VkPhysicalDeviceFeatures.calloc(stack);
+            if (supportedFeatures.samplerAnisotropy()) {
+                enabledFeatures.samplerAnisotropy(true);
+                samplerAnisotropyEnabled = true;
+            }
 
             queueFamilyIndex = findQueueFamilyIndex(physicalDevice, surface);
             System.out.println("[Vulkan] selected queueFamilyIndex=" + queueFamilyIndex);
@@ -206,7 +226,8 @@ public final class VkContext {
                     .sType(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO)
                     .pNext(dyn.address())
                     .pQueueCreateInfos(qCI)
-                    .ppEnabledExtensionNames(devExt);
+                    .ppEnabledExtensionNames(devExt)
+                    .pEnabledFeatures(enabledFeatures);
 
             PointerBuffer pDev = stack.mallocPointer(1);
             int dErr = vkCreateDevice(physicalDevice, dCI, null, pDev);
@@ -260,10 +281,33 @@ public final class VkContext {
                 throw new RuntimeException("vkGetPhysicalDeviceSurfaceFormatsKHR(list) failed: " + sf1);
             }
 
+            //探测物理设备支持的 UNORM 和 SRGB 格式
+            colorFormatUnorm = VK_FORMAT_B8G8R8A8_UNORM;
+            colorFormatSrgb = VK_FORMAT_B8G8R8A8_SRGB;
+
             if (formatCount == 1 && surfFormats.get(0).format() == VK_FORMAT_UNDEFINED) {
-                colorFormat = VK_FORMAT_B8G8R8A8_UNORM;
+                // 如果返回 UNDEFINED 表示显卡支持任何格式，保持上方默认值
             } else {
-                colorFormat = surfFormats.get(0).format();
+                boolean foundUnorm = false;
+                boolean foundSrgb = false;
+                for (int i = 0; i < formatCount; i++) {
+                    int fmt = surfFormats.get(i).format();
+                    if (!foundUnorm && (fmt == VK_FORMAT_B8G8R8A8_UNORM || fmt == VK_FORMAT_R8G8B8A8_UNORM)) {
+                        colorFormatUnorm = fmt;
+                        foundUnorm = true;
+                    }
+                    if (!foundSrgb && (fmt == VK_FORMAT_B8G8R8A8_SRGB || fmt == VK_FORMAT_R8G8B8A8_SRGB)) {
+                        colorFormatSrgb = fmt;
+                        foundSrgb = true;
+                    }
+                }
+                // 兜底：如果设备非常奇怪，不支持对应的格式，只能强行取第一个
+                if (!foundUnorm) {
+                    colorFormatUnorm = surfFormats.get(0).format();
+                }
+                if (!foundSrgb) {
+                    colorFormatSrgb = colorFormatUnorm;
+                }
             }
             colorSpace = surfFormats.get(0).colorSpace();
 
@@ -404,8 +448,8 @@ public final class VkContext {
         return queueFamilyIndex;
     }
 
-    public int colorFormat() {
-        return colorFormat;
+    public int getColorFormat(boolean srgb) {
+        return srgb ? colorFormatSrgb : colorFormatUnorm;
     }
 
     public int colorSpace() {

@@ -32,7 +32,7 @@ public final class VulkanRuntimeLifecycle {
         this.owner = owner;
         this.s = s;
         this.log = log;
-        this.debug = s.settings.isGraphicsDebug(); 
+        this.debug = s.settings.isGraphicsDebug();
     }
 
     public void init() throws IOException {
@@ -61,8 +61,13 @@ public final class VulkanRuntimeLifecycle {
         }
 
         log.fine("[VulkanRuntime] recreateSwapchain begin: " + fbW + "x" + fbH);
-        s.renderTargetManager.recreate(fbW, fbH);
+        s.renderTargetManager.recreate(fbW, fbH, s.mainFbSrgb);
 
+        //Swapchain 重塑时，附带更新管线的默认格式
+        s.defaultPassKey = new PassKey(1, s.vk.getColorFormat(s.mainFbSrgb), s.vk.depthFormat(), VK_SAMPLE_COUNT_1_BIT);
+        if (s.pipelineManager != null) {
+            s.pipelineManager.setDefaultPassKey(s.defaultPassKey);
+        }
         if (s.commands == null) {
             throw new IllegalStateException("commands not initialized");
         }
@@ -102,8 +107,9 @@ public final class VulkanRuntimeLifecycle {
         s.vk = new VkContext(debug);
         s.vk.init(s.window);
 
-        s.samplerManager = new VulkanSamplerManager(s.vk);
-        s.defaultPassKey = new PassKey(1, s.vk.colorFormat(), s.vk.depthFormat(), VK_SAMPLE_COUNT_1_BIT);
+        //将 State 中的 defaultAnisotropicFilter 连接给 SamplerManager
+        s.samplerManager = new VulkanSamplerManager(s.vk, () -> s.defaultAnisotropicFilter);
+        s.defaultPassKey = new PassKey(1, s.vk.getColorFormat(s.mainFbSrgb), s.vk.depthFormat(), VK_SAMPLE_COUNT_1_BIT);
     }
 
     private void initResources() {
@@ -123,7 +129,7 @@ public final class VulkanRuntimeLifecycle {
         try {
             white.put((byte) 255).put((byte) 255).put((byte) 255).put((byte) 255).flip();
             // 【编译修复】：末尾传入 false，表示纯白占位贴图不需要做 ABGR 翻转
-            s.whiteTex = s.rf.createTexture2DFromBuffer(white, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, false);
+            s.whiteTex = s.rf.createTexture2DFromBuffer(white, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
         } finally {
             memFree(white);
         }
@@ -131,6 +137,13 @@ public final class VulkanRuntimeLifecycle {
         s.textureManager = new VulkanTextureManager(
                 s.rf,
                 s.whiteTex,
+                s.deferredReleaseQueue,
+                owner::getCurrentFrameSlot,
+                () -> s.linearizeSrgbImages // [新增] 传入动态开关
+        );
+
+        s.frameBufferManager = new VulkanFrameBufferManager(
+                s.rf,
                 s.deferredReleaseQueue,
                 owner::getCurrentFrameSlot
         );
@@ -175,7 +188,7 @@ public final class VulkanRuntimeLifecycle {
 
     private void initRenderTargetsAndFrameDriver() {
         s.renderTargetManager = new VulkanRenderTargetManager(s.vk, s.rf, s.settings.isVSync());
-        s.renderTargetManager.init(s.window.fbWidth(), s.window.fbHeight());
+        s.renderTargetManager.init(s.window.fbWidth(), s.window.fbHeight(), s.mainFbSrgb);
 
         s.commands.ensureForSwapchain(s.renderTargetManager.getSwapchain().getImageCount());
 
@@ -218,6 +231,10 @@ public final class VulkanRuntimeLifecycle {
         if (s.deferredReleaseQueue != null) {
             s.deferredReleaseQueue.flushAll();
             s.deferredReleaseQueue = null;
+        }
+        if (s.frameBufferManager != null) {
+            s.frameBufferManager.destroyAll();
+            s.frameBufferManager = null;
         }
     }
 

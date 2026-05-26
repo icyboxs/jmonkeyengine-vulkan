@@ -3,9 +3,9 @@ package com.jme3.renderer.vulkan.resource;
 import com.jme3.texture.Image;
 import com.jme3.texture.Texture;
 import java.nio.ByteBuffer;
-import java.nio.IntBuffer;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.function.BooleanSupplier;
 import java.util.function.IntSupplier;
 import static org.lwjgl.vulkan.VK10.*;
 
@@ -13,6 +13,7 @@ public final class VulkanTextureManager {
 
     private final VulkanDeferredReleaseQueue deferredReleaseQueue;
     private final IntSupplier frameIndexSupplier;
+    private final BooleanSupplier linearizeSrgbSupplier;
     private final VkResourceFactory rf;
     private final Map<Texture, VkTexture> textureCache = new WeakHashMap<>();
     private VkTexture whiteTex;
@@ -22,7 +23,8 @@ public final class VulkanTextureManager {
 
     public VulkanTextureManager(VkResourceFactory rf, VkTexture whiteTex,
             VulkanDeferredReleaseQueue deferredReleaseQueue,
-            IntSupplier frameIndexSupplier) {
+            IntSupplier frameIndexSupplier,
+            BooleanSupplier linearizeSrgbSupplier) {
         if (rf == null) {
             throw new IllegalArgumentException("rf is null");
         }
@@ -30,6 +32,9 @@ public final class VulkanTextureManager {
         this.whiteTex = whiteTex;
         this.deferredReleaseQueue = deferredReleaseQueue;
         this.frameIndexSupplier = frameIndexSupplier;
+
+        // 补充缺失的这一行：
+        this.linearizeSrgbSupplier = linearizeSrgbSupplier;
     }
 
     public void setWhiteTex(VkTexture whiteTex) {
@@ -66,52 +71,47 @@ public final class VulkanTextureManager {
             return whiteTex;
         }
 
+        boolean isSrgb = linearizeSrgbSupplier.getAsBoolean()
+                && img.getColorSpace() == com.jme3.texture.image.ColorSpace.sRGB;
+
         int vkFormat;
-        boolean swizzleABGR = false;
         ByteBuffer pixels;
         // --- 核心：处理 jME3 到 Vulkan 的格式映射与转换 ---
         Image.Format fmt = img.getFormat();
         switch (fmt) {
             case RGBA8:
-                vkFormat = VK_FORMAT_R8G8B8A8_UNORM;
+                vkFormat = isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
                 pixels = data.duplicate();
                 pixels.position(0).limit(w * h * 4);
                 break;
             case ABGR8:
-                // 【解放 CPU】：数据原样上传，标记底层 Swizzle
-                vkFormat = VK_FORMAT_R8G8B8A8_UNORM;
-                pixels = data.duplicate();
-                pixels.position(0).limit(w * h * 4);
-                swizzleABGR = true;
+                // 放弃存在兼容性问题的硬件 Swizzle，改用可靠的 CPU 内存转换
+                vkFormat = isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+                pixels = convertABGR8ToRGBA8(data, w * h); 
                 break;
-            case RGB8: // 此处由于 24 位不对齐，只能保留转换
-                vkFormat = VK_FORMAT_R8G8B8A8_UNORM;
+            case RGB8:
+                vkFormat = isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
                 pixels = convert24BitToRGBA8(data, w * h, false);
                 break;
             case BGR8:
-                // 解决发红：原数据 B,G,R -> 转为 R,G,B,A
-                vkFormat = VK_FORMAT_R8G8B8A8_UNORM;
+                vkFormat = isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
                 pixels = convert24BitToRGBA8(data, w * h, true);
                 break;
-
             case Luminance8:
-                vkFormat = VK_FORMAT_R8_UNORM;
+                vkFormat = isSrgb ? VK_FORMAT_R8_SRGB : VK_FORMAT_R8_UNORM;
                 pixels = data.duplicate();
                 pixels.position(0).limit(w * h);
                 break;
-
             case Luminance8Alpha8:
-                vkFormat = VK_FORMAT_R8G8_UNORM;
+                vkFormat = isSrgb ? VK_FORMAT_R8G8_SRGB : VK_FORMAT_R8G8_UNORM;
                 pixels = data.duplicate();
                 pixels.position(0).limit(w * h * 2);
                 break;
-
             default:
                 throw new UnsupportedOperationException("Vulkan backend does not support format: " + fmt);
         }
 
-        // 修改：假设 rf.createTexture2DFromBuffer 现在接受 vkFormat 参数
-        VkTexture vkTex = rf.createTexture2DFromBuffer(pixels, w, h, vkFormat, swizzleABGR);
+        VkTexture vkTex = rf.createTexture2DFromBuffer(pixels, w, h, vkFormat);
         textureCache.put(tex, vkTex);
         return vkTex;
     }

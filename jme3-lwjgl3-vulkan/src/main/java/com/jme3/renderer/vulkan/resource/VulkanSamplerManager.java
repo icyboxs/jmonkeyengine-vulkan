@@ -8,6 +8,7 @@ import org.lwjgl.vulkan.VkSamplerCreateInfo;
 import java.nio.LongBuffer;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.IntSupplier; // 【新增导入】
 
 import static org.lwjgl.vulkan.VK10.*;
 
@@ -15,22 +16,29 @@ public final class VulkanSamplerManager {
 
     private final VkContext vk;
     private final Map<VkSamplerKey, Long> samplerCache = new HashMap<>();
+    private final IntSupplier defaultAnisoSupplier;
 
-    public VulkanSamplerManager(VkContext vk) {
+    //构造函数引入 Supplier 参数
+    public VulkanSamplerManager(VkContext vk, IntSupplier defaultAnisoSupplier) {
         if (vk == null) {
             throw new IllegalArgumentException("vk is null");
         }
         this.vk = vk;
+        this.defaultAnisoSupplier = defaultAnisoSupplier != null ? defaultAnisoSupplier : () -> 1;
     }
 
     public long getOrCreateSampler(Texture tex) {
-        VkSamplerKey key = new VkSamplerKey(tex);
+        // 取出当前渲染环境配置的默认各向异性值
+        int defaultAniso = defaultAnisoSupplier.getAsInt();
+
+        VkSamplerKey key = new VkSamplerKey(tex, defaultAniso);
         Long cached = samplerCache.get(key);
         if (cached != null && cached.longValue() != 0L) {
             return cached.longValue();
         }
 
-        long sampler = createSamplerFromJme(tex);
+        // 将 key 计算后的安全 aniso 值传递给创建方法
+        long sampler = createSamplerFromJme(tex, key.aniso);
         samplerCache.put(key, sampler);
         return sampler;
     }
@@ -49,7 +57,8 @@ public final class VulkanSamplerManager {
         samplerCache.clear();
     }
 
-    private long createSamplerFromJme(Texture tex) {
+    //增加 anisoValue 参数
+    private long createSamplerFromJme(Texture tex, int anisoValue) {
         Texture.MagFilter mag = tex != null ? tex.getMagFilter() : Texture.MagFilter.Bilinear;
         Texture.MinFilter min = tex != null ? tex.getMinFilter() : Texture.MinFilter.BilinearNoMipMaps;
 
@@ -57,10 +66,7 @@ public final class VulkanSamplerManager {
         Texture.WrapMode wt = tex != null ? tex.getWrap(Texture.WrapAxis.T) : Texture.WrapMode.EdgeClamp;
 
         int vkMag = (mag == Texture.MagFilter.Nearest) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-
-        boolean useMip = !(min == Texture.MinFilter.NearestNoMipMaps
-                || min == Texture.MinFilter.BilinearNoMipMaps);
-
+        boolean useMip = !(min == Texture.MinFilter.NearestNoMipMaps || min == Texture.MinFilter.BilinearNoMipMaps);
         int vkMin;
         switch (min) {
             case NearestNoMipMaps:
@@ -87,8 +93,11 @@ public final class VulkanSamplerManager {
         int aU = mapWrap(ws);
         int aV = mapWrap(wt);
 
-        float aniso = tex != null ? tex.getAnisotropicFilter() : 0;
-        boolean enableAniso = aniso > 1.0f;
+        //开启判断和硬件极限防护
+        float aniso = anisoValue;
+        boolean enableAniso = aniso > 1.0f && vk.isSamplerAnisotropyEnabled();
+        // 与设备支持的最大值进行截断防崩
+        float maxAniso = enableAniso ? Math.min(aniso, vk.maxSamplerAnisotropy()) : 1.0f;
 
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkSamplerCreateInfo sci = VkSamplerCreateInfo.calloc(stack)
@@ -100,7 +109,7 @@ public final class VulkanSamplerManager {
                     .addressModeV(aV)
                     .addressModeW(VK_SAMPLER_ADDRESS_MODE_REPEAT)
                     .anisotropyEnable(enableAniso)
-                    .maxAnisotropy(enableAniso ? Math.max(1.0f, aniso) : 1.0f)
+                    .maxAnisotropy(maxAniso) // 传入截断后的安全值
                     .borderColor(VK_BORDER_COLOR_INT_OPAQUE_BLACK)
                     .unnormalizedCoordinates(false)
                     .compareEnable(false)

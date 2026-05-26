@@ -53,15 +53,27 @@ public final class RendererStateSnapshot {
     public ColorRGBA color;
     public Material material;
 
+    public boolean alphaToCoverage;
+
+    public int vpX, vpY, vpW, vpH;
+    public boolean clipEnabled;
+    public int clipX, clipY, clipW, clipH;
+    public float depthRangeStart;
+    public float depthRangeEnd;
+    
     public RendererStateSnapshot() {
     }
 
-    public static RendererStateSnapshot of(Shader shader,
+public static RendererStateSnapshot of(Shader shader,
             RenderState renderState,
             Texture tex0,
             Texture light,
             Texture extra,
-            Material material) {
+            Material material,
+            boolean alphaToCoverage,
+            int vpX, int vpY, int vpW, int vpH,
+            boolean clipEnabled, int clipX, int clipY, int clipW, int clipH,
+            float depthRangeStart, float depthRangeEnd) {
         RendererStateSnapshot s = new RendererStateSnapshot();
         s.shader = shader;
         s.renderState = renderState;
@@ -69,8 +81,24 @@ public final class RendererStateSnapshot {
         s.light = light;
         s.extra = extra;
         s.material = material;
+        s.alphaToCoverage = alphaToCoverage;
+        
+        s.vpX = vpX;
+        s.vpY = vpY;
+        s.vpW = vpW;
+        s.vpH = vpH;
+        
+        s.clipEnabled = clipEnabled;
+        s.clipX = clipX;
+        s.clipY = clipY;
+        s.clipW = clipW;
+        s.clipH = clipH;
+        
+        s.depthRangeStart = depthRangeStart;
+        s.depthRangeEnd = depthRangeEnd;
         return s;
     }
+
 
     @Override
     public String toString() {
@@ -82,6 +110,10 @@ public final class RendererStateSnapshot {
                 + ", extra=" + texName(extra)
                 + ", wvp=" + (wvp != null)
                 + ", color=" + (color != null)
+                + ", alphaToCoverage=" + alphaToCoverage
+                + ", viewport=[" + vpX + "," + vpY + "," + vpW + "," + vpH + "]"
+                + ", clip=[" + clipEnabled + "," + clipX + "," + clipY + "," + clipW + "," + clipH + "]"
+                + ", depthRange=[" + depthRangeStart + "," + depthRangeEnd + "]"
                 + '}';
     }
 
@@ -92,6 +124,5 @@ public final class RendererStateSnapshot {
         String n = t.getName();
         return (n != null) ? n : ("@" + System.identityHashCode(t));
     }
-
 
 }

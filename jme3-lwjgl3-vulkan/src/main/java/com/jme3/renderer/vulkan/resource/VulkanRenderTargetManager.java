@@ -31,30 +31,25 @@ public final class VulkanRenderTargetManager {
         this.vsync = vsync;
     }
 
-    public void init(int width, int height) {
+// init 和 recreate 需要传递 srgb
+    public void init(int width, int height, boolean srgb) {
         if (swapchain != null) {
             return;
         }
-
-        // 实例化时传入 vsync
         swapchain = new VulkanSwapchain(vk, rf, vsync);
-        swapchain.recreate(width, height);
-
-        recreateOffscreen(width, height);
+        swapchain.recreate(width, height, srgb);
+        recreateOffscreen(width, height, srgb);
     }
 
-    public void recreate(int width, int height) {
+    public void recreate(int width, int height, boolean srgb) {
         if (swapchain == null) {
-            init(width, height);
+            init(width, height, srgb);
             return;
         }
-
         vk.waitIdle();
-
         swapchain.cleanup();
-        swapchain.recreate(width, height);
-
-        recreateOffscreen(width, height);
+        swapchain.recreate(width, height, srgb);
+        recreateOffscreen(width, height, srgb);
     }
 
     public void cleanup() {
@@ -90,14 +85,14 @@ public final class VulkanRenderTargetManager {
         return offscreen.color;
     }
 
-    private void recreateOffscreen(int w, int h) {
+    private void recreateOffscreen(int w, int h, boolean srgb) {
         destroyOffscreen();
 
         offscreen = new VkOffscreenTarget();
         offscreen.width = w;
         offscreen.height = h;
 
-        offscreen.color = rf.createColorAttachmentTexture(w, h, vk.colorFormat());
+        offscreen.color = rf.createColorAttachmentTexture(w, h, vk.getColorFormat(srgb));
         offscreen.depth = rf.createDepth(w, h, vk.depthFormat());
 
         offscreen.colorLayout = VK_IMAGE_LAYOUT_UNDEFINED;

@@ -44,6 +44,7 @@ public final class DescriptorBindRequest {
     /**
      * 从池中获取一个实例，如果池为空则创建新实例。
      * 替代原有的 DescriptorBindRequest.of() 静态工厂。
+     * @return 
      */
     public static DescriptorBindRequest acquire() {
         synchronized (POOL) {

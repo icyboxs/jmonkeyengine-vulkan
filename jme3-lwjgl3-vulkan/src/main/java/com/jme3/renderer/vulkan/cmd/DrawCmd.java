@@ -16,6 +16,11 @@ public final class DrawCmd {
     private static final DrawCmd[] POOL = new DrawCmd[65536];
     private static int poolPtr = -1;
 
+    public int vpX, vpY, vpW, vpH;
+    public boolean clipEnabled;
+    public int clipX, clipY, clipW, clipH;
+    public float depthRangeStart, depthRangeEnd;
+    
     public static DrawCmd acquire() {
         synchronized (POOL) {
             if (poolPtr >= 0) {
@@ -47,6 +52,11 @@ public final class DrawCmd {
         }
         customImageCount = 0;
 
+        vpX = 0; vpY = 0; vpW = 0; vpH = 0;
+        clipEnabled = false;
+        clipX = 0; clipY = 0; clipW = 0; clipH = 0;
+        depthRangeStart = 0f; depthRangeEnd = 0f;
+        
         synchronized (POOL) {
             if (poolPtr < POOL.length - 1) {
                 POOL[++poolPtr] = this;

@@ -1,5 +1,6 @@
 package com.jme3.renderer.vulkan.queue;
 
+import com.jme3.renderer.vulkan.cmd.CopyCmd;
 import com.jme3.renderer.vulkan.cmd.DrawCmd;
 import com.jme3.renderer.vulkan.cmd.MaterialBatchKey;
 import com.jme3.renderer.vulkan.frame.VulkanFrameInfo;
@@ -14,6 +15,17 @@ public final class DrawQueue {
 
     private final ArrayList<DrawCmd> opaqueList = new ArrayList<>(8192);
     private final ArrayList<DrawCmd> guiList = new ArrayList<>(2048);
+    private final ArrayList<CopyCmd> copyList = new ArrayList<>(32);
+
+    public void enqueueCopy(CopyCmd cmd) {
+        if (cmd != null && copyList.size() < 64) {
+            copyList.add(cmd);
+        }
+    }
+
+    public java.util.List<CopyCmd> getCopyCommands() {
+        return copyList;
+    }
 
     public boolean isFull() {
         return (opaqueList.size() + guiList.size()) >= MAX_QUEUED_DRAWS;
@@ -35,20 +47,33 @@ public final class DrawQueue {
 
     public void clear() {
         // 【核心】：对象回收
-        for (int i = 0; i < opaqueList.size(); i++) opaqueList.get(i).recycle();
-        for (int i = 0; i < guiList.size(); i++) guiList.get(i).recycle();
-        
+        for (int i = 0; i < opaqueList.size(); i++) {
+            opaqueList.get(i).recycle();
+        }
+        for (int i = 0; i < guiList.size(); i++) {
+            guiList.get(i).recycle();
+        }
+
+        for (int i = 0; i < copyList.size(); i++) {
+            copyList.get(i).recycle();
+        }
+        copyList.clear();
         opaqueList.clear();
         guiList.clear();
     }
 
-    public java.util.List<DrawCmd> getOpaqueCommands() { return opaqueList; }
-    public java.util.List<DrawCmd> getGuiCommands() { return guiList; }
+    public java.util.List<DrawCmd> getOpaqueCommands() {
+        return opaqueList;
+    }
+
+    public java.util.List<DrawCmd> getGuiCommands() {
+        return guiList;
+    }
 
     public void precomputeAndSort(VulkanFrameInfo frame) {
         precomputeList(frame, opaqueList);
         precomputeList(frame, guiList);
-        
+
         // 【极速排序】：直接按 64位长整型基数排序
         opaqueList.sort((a, b) -> Long.compare(a.sortKey, b.sortKey));
     }
@@ -57,7 +82,9 @@ public final class DrawQueue {
         final int size = list.size();
         for (int i = 0; i < size; i++) {
             DrawCmd dc = list.get(i);
-            if (!dc.isRenderable()) continue;
+            if (!dc.isRenderable()) {
+                continue;
+            }
 
             long[] views = new long[dc.customImageCount];
             long[] samplers = new long[dc.customImageCount];
@@ -67,15 +94,17 @@ public final class DrawQueue {
                 com.jme3.renderer.vulkan.resource.VkTexture vkTex = frame.runtime.getOrCreateVkTexture(jmeTex);
                 long sampler = frame.runtime.getOrCreateSampler(jmeTex != null ? jmeTex : frame.runtime.getOffscreenJmeTex());
                 if (vkTex == null) {
-                    vkTex = frame.runtime.getOrCreateVkTexture(null); 
-                    if (vkTex != null) sampler = vkTex.sampler;
+                    vkTex = frame.runtime.getOrCreateVkTexture(null);
+                    if (vkTex != null) {
+                        sampler = vkTex.sampler;
+                    }
                 }
                 views[j] = (vkTex != null) ? vkTex.view : 0L;
                 samplers[j] = sampler;
             }
 
             dc.materialBatchKey = new MaterialBatchKey(views, samplers, dc.variant);
-            
+
             // 构建 64-bit 排序键：高32位(管道Hash) | 低32位(材质Hash)
             long pHash = (long) dc.pipelineKey.hashCode() & 0xFFFFFFFFL;
             long mHash = (long) dc.materialBatchKey.hashCode() & 0xFFFFFFFFL;

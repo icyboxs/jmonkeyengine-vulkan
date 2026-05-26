@@ -29,6 +29,11 @@ public final class VulkanFrameDriver {
 
     private int frameIndex = 0;
     private boolean initialized = false;
+    private int lastImageIndex = 0;
+
+    public int getLastImageIndex() {
+        return lastImageIndex;
+    }
 
     public VulkanFrameDriver(VkContext vk) {
         this.vk = vk;
@@ -96,7 +101,7 @@ public final class VulkanFrameDriver {
             }
 
             int imageIndex = pImageIndex.get(0);
-
+            this.lastImageIndex = imageIndex;
             // 3. 检查并等待该图像之前的 Fence (解决 WRITE_AFTER_PRESENT)
             ensureImagesInFlightCapacity(frameInfo.swapchain.getImageCount());
             if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {

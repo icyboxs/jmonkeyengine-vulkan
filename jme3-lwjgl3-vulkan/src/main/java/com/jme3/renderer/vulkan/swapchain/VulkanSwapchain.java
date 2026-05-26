@@ -21,7 +21,8 @@ public final class VulkanSwapchain {
     private final VkContext vk;
     private final VkResourceFactory rf;
     private final boolean vsync; // 新增 vsync 状态
-
+    private int colorFormat; // [新增记录格式]
+    
     private long swapchain;
     private long[] images;
     private long[] imageViews;
@@ -51,7 +52,11 @@ public final class VulkanSwapchain {
             imageLayouts[i] = layout;
         }
     }
-
+    
+    public int getColorFormat() {
+        return colorFormat;
+    }
+    
     // 修改构造函数，增加 vsync
     public VulkanSwapchain(VkContext vk, VkResourceFactory rf, boolean vsync) {
         this.vk = vk;
@@ -87,10 +92,13 @@ public final class VulkanSwapchain {
         return height;
     }
 
-    public void recreate(int w, int h) {
+    public void recreate(int w, int h, boolean srgb) {
         this.width = w;
         this.height = h;
 
+        // [新增] 动态决定交换链格式
+        this.colorFormat = vk.getColorFormat(srgb);
+        
         try (MemoryStack stack = MemoryStack.stackPush()) {
             // 根据 vsync 状态选择 Present Mode
             int presentMode = vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR;
@@ -99,9 +107,9 @@ public final class VulkanSwapchain {
                     .sType$Default()
                     .surface(vk.surface())
                     .minImageCount(2) 
-                    .imageFormat(vk.colorFormat())
+                    .imageFormat(colorFormat)
                     .imageColorSpace(vk.colorSpace())
-                    .imageUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
+                    .imageUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
                     .imageArrayLayers(1)
                     .imageSharingMode(VK_SHARING_MODE_EXCLUSIVE)
                     .preTransform(VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)
@@ -135,7 +143,7 @@ public final class VulkanSwapchain {
             for (int i = 0; i < count; i++) {
                 long img = pImgs.get(i);
                 images[i] = img;
-                imageViews[i] = rf.createImageView(img, vk.colorFormat(), VK_IMAGE_ASPECT_COLOR_BIT);
+                imageViews[i] = rf.createImageView(img,colorFormat, VK_IMAGE_ASPECT_COLOR_BIT);
             }
 
             depth = rf.createDepth(w, h, vk.depthFormat());

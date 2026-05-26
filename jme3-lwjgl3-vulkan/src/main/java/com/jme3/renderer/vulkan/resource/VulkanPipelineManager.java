@@ -47,7 +47,7 @@ public final class VulkanPipelineManager {
 
     private final VkContext vk;
     private final VulkanShaders shaders;
-    private final PassKey defaultPassKey;
+    private PassKey defaultPassKey;
     private final VulkanRuntimeStats stats;
 
     private VulkanPipeline basePipeline;
@@ -86,7 +86,7 @@ public final class VulkanPipelineManager {
 
         VkPipelineKey baseKey = new VkPipelineKey(
                 new VkShaderKey(0, 0, new VkVariantKey(false, false, false)),
-                defaultPassKey, VK_CULL_MODE_NONE, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VkPipelineKey.Blend.Off, 0
+                defaultPassKey, VK_CULL_MODE_NONE, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, VkPipelineKey.Blend.Off, 0, false
         );
         pipelinePushConstantSize.put(baseKey, 0);
 
@@ -512,4 +512,7 @@ public final class VulkanPipelineManager {
         return CacheClass.NONE;
     }
 
+    public void setDefaultPassKey(PassKey passKey) {
+        this.defaultPassKey = passKey;
+    }
 }

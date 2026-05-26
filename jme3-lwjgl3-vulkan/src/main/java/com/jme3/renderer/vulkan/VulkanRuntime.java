@@ -17,8 +17,9 @@ import java.io.IOException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
 /**
- * 
+ *
  * @author icyboxs
  */
 public final class VulkanRuntime {
@@ -148,6 +149,26 @@ public final class VulkanRuntime {
     }
 
     // ===== facade delegates =====
+    public void setMainFrameBufferSrgb(boolean srgb) {
+        facade.setMainFrameBufferSrgb(srgb);
+    }
+
+    public boolean isMainFrameBufferSrgb() {
+        return facade.isMainFrameBufferSrgb();
+    }
+
+    public void setLinearizeSrgbImages(boolean linearize) {
+        facade.setLinearizeSrgbImages(linearize);
+    }
+
+    public boolean isLinearizeSrgbImages() {
+        return facade.isLinearizeSrgbImages();
+    }
+
+    public void readFrameBuffer(com.jme3.texture.FrameBuffer fb, java.nio.ByteBuffer byteBuf, com.jme3.texture.Image.Format format) {
+        facade.readFrameBuffer(fb, byteBuf, format);
+    }
+
     public com.jme3.renderer.vulkan.mesh.VkMeshGpu getOrCreateMeshGpu(Mesh mesh) {
         return facade.getOrCreateMeshGpu(mesh);
     }
@@ -269,6 +290,10 @@ public final class VulkanRuntime {
         facade.invalidateMeshGpuByVertexBuffer(vb);
     }
 
+    public void deleteFrameBuffer(com.jme3.texture.FrameBuffer fb) {
+        facade.deleteFrameBuffer(fb);
+    }
+
     public void setCurrentFrameSlot(int frameIndex) {
         s.currentFrameSlot = frameIndex;
     }
@@ -282,12 +307,11 @@ public final class VulkanRuntime {
 //            s.deferredReleaseQueue.flushForFrame(frameIndex);
 //        }
 //    }
-    
     public void onFrameSlotBegin(int frameIndex) {
         if (s.deferredReleaseQueue != null) {
             s.deferredReleaseQueue.flushForFrame(frameIndex);
         }
-        
+
         // 【显存泄漏修复】：重置当前帧槽位的 DescriptorPool。
         // 在这之前，由于遗漏了对底层帧池的 reset 调用，导致 DescriptorPool
         // 只分配不回收，并不断触发内部的 growPools() 创建呈指数级变大的新池子，
@@ -298,4 +322,14 @@ public final class VulkanRuntime {
             }
         }
     }
+
+    // 在 facade delegates 区域新增：
+    public void setDefaultAnisotropicFilter(int level) {
+        facade.setDefaultAnisotropicFilter(level);
+    }
+
+    public int getDefaultAnisotropicFilter() {
+        return facade.getDefaultAnisotropicFilter();
+    }
+    
 }

@@ -145,7 +145,6 @@ public final class VulkanRuntimeFacade {
     }
 
     public VkUboLayout getPipelineUboLayout(VkPipelineKey key) {
-        // S7-T1: 不再兜底 fixedStage1()
         if (s.forceFixedUboLayout || s.pipelineManager == null) {
             return VkUboLayout.empty();
         }
@@ -223,4 +222,120 @@ public final class VulkanRuntimeFacade {
         }
     }
 
+    public void deleteFrameBuffer(com.jme3.texture.FrameBuffer fb) {
+        if (s.frameBufferManager != null) {
+            s.frameBufferManager.deleteFrameBuffer(fb);
+        }
+    }
+
+    public void readFrameBuffer(com.jme3.texture.FrameBuffer fb, java.nio.ByteBuffer byteBuf, com.jme3.texture.Image.Format format) {
+        if (s.vk == null || s.rf == null || byteBuf == null) {
+            return;
+        }
+
+        // 强行同步：确保 GPU 已经完成所有绘制任务，以便截出最新画面
+        org.lwjgl.vulkan.VK10.vkDeviceWaitIdle(s.vk.device());
+
+        long srcImage = 0;
+        int srcLayout = org.lwjgl.vulkan.VK10.VK_IMAGE_LAYOUT_UNDEFINED;
+        int width = 0, height = 0;
+        boolean isVulkanBGRA = false;
+
+        if (fb == null) {
+            // [模式A] 读取主屏幕 Swapchain 图像
+            com.jme3.renderer.vulkan.swapchain.VulkanSwapchain sc = s.renderTargetManager.getSwapchain();
+            if (sc == null) {
+                return;
+            }
+
+            int idx = s.frameDriver != null ? s.frameDriver.getLastImageIndex() : 0;
+            srcImage = sc.getImage(idx);
+            srcLayout = sc.getImageLayout(idx);
+            if (srcLayout == org.lwjgl.vulkan.VK10.VK_IMAGE_LAYOUT_UNDEFINED) {
+                srcLayout = org.lwjgl.vulkan.KHRSwapchain.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            }
+            width = sc.getWidth();
+            height = sc.getHeight();
+
+            int vkFormat = sc.getColorFormat();
+            isVulkanBGRA = (vkFormat == org.lwjgl.vulkan.VK10.VK_FORMAT_B8G8R8A8_UNORM || vkFormat == org.lwjgl.vulkan.VK10.VK_FORMAT_B8G8R8A8_SRGB);
+        } else {
+            // [模式B] 读取离线 FBO
+            com.jme3.texture.FrameBuffer.RenderBuffer rb = fb.getColorTarget();
+            if (rb == null || rb.getTexture() == null) {
+                return;
+            }
+
+            com.jme3.renderer.vulkan.resource.VkTexture vkTex = getOrCreateVkTexture(rb.getTexture());
+            if (vkTex == null || vkTex.image == 0) {
+                return;
+            }
+
+            srcImage = vkTex.image;
+            srcLayout = org.lwjgl.vulkan.VK10.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            width = vkTex.width;
+            height = vkTex.height;
+            isVulkanBGRA = false; // 用户创建的 FBO 一般都是原生 RGBA8
+        }
+
+        if (srcImage == 0 || width <= 0 || height <= 0) {
+            return;
+        }
+
+        s.rf.downloadImagePixels(srcImage, srcLayout, width, height, byteBuf, format, isVulkanBGRA);
+    }
+
+    public void setMainFrameBufferSrgb(boolean srgb) {
+        if (s.mainFbSrgb != srgb) {
+            s.mainFbSrgb = srgb;
+            if (s.renderTargetManager != null) {
+                // 触发 Swapchain 和 主屏幕渲染格式重建
+                s.reshapeRequested.set(true);
+            }
+
+            if (s.vk != null) {
+                // 1. 刷新 PassKey 的全局颜色格式，否则后续新创建的 Pipeline 会崩溃
+                s.defaultPassKey = new com.jme3.renderer.vulkan.pipeline.PassKey(1, s.vk.getColorFormat(srgb), s.vk.depthFormat(), org.lwjgl.vulkan.VK10.VK_SAMPLE_COUNT_1_BIT);
+
+                // 2. 强行销毁旧有的 Graphics Pipeline (管线无法适应改变了格式后的 RenderPass)
+                if (s.pipelineManager != null) {
+                    s.pipelineManager.setDefaultPassKey(s.defaultPassKey);
+                    s.pipelineManager.destroy();
+                    try {
+                        s.pipelineManager.init(); // 重新拉起基础管线
+                    } catch (java.io.IOException e) {
+                        throw new RuntimeException("Failed to reinitialize pipelines for SRGB change", e);
+                    }
+                }
+            }
+        }
+    }
+
+    public boolean isMainFrameBufferSrgb() {
+        return s.mainFbSrgb;
+    }
+
+    public void setLinearizeSrgbImages(boolean linearize) {
+        if (s.linearizeSrgbImages != linearize) {
+            s.linearizeSrgbImages = linearize;
+            // 如果在运行时突然切换线性化开关，需要废弃当前所有已缓存的 Vulkan 纹理，迫使它们按新格式重新上传
+            if (s.textureManager != null) {
+                s.textureManager.destroyCachedTextures();
+            }
+        }
+    }
+
+    public boolean isLinearizeSrgbImages() {
+        return s.linearizeSrgbImages;
+    }
+    
+    // 在类的末尾新增：
+    public void setDefaultAnisotropicFilter(int level) {
+        // 限制最低为 1
+        s.defaultAnisotropicFilter = Math.max(1, level);
+    }
+
+    public int getDefaultAnisotropicFilter() {
+        return s.defaultAnisotropicFilter;
+    }
 }

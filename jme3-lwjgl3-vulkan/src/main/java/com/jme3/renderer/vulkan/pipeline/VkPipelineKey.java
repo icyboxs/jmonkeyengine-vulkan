@@ -36,6 +36,8 @@ public final class VkPipelineKey {
     // 【新增】保存网格顶点特征的变体掩码
     public final int vertexLayoutMask;
 
+    public final boolean alphaToCoverage;
+
     public enum Blend {
         Off,
         Alpha,
@@ -49,7 +51,8 @@ public final class VkPipelineKey {
             boolean depthWrite,
             int depthCompareOp,
             Blend blend,
-            int vertexLayoutMask) {
+            int vertexLayoutMask,
+            boolean alphaToCoverage) {
         this.shaderKey = shaderKey;
         this.passKey = passKey;
         this.cullMode = cullMode;
@@ -58,6 +61,7 @@ public final class VkPipelineKey {
         this.depthCompareOp = depthCompareOp;
         this.blend = blend;
         this.vertexLayoutMask = vertexLayoutMask;
+        this.alphaToCoverage = alphaToCoverage;
     }
 
     @Override
@@ -71,6 +75,7 @@ public final class VkPipelineKey {
         result = 31 * result + depthCompareOp;
         result = 31 * result + (blend != null ? blend.ordinal() : 0);
         result = 31 * result + vertexLayoutMask;
+        result = 31 * result + (alphaToCoverage ? 1 : 0);
         return result;
     }
 
@@ -89,6 +94,7 @@ public final class VkPipelineKey {
                 && depthCompareOp == k.depthCompareOp
                 && blend == k.blend
                 && vertexLayoutMask == k.vertexLayoutMask
+                && alphaToCoverage == k.alphaToCoverage
                 && Objects.equals(shaderKey, k.shaderKey)
                 && Objects.equals(passKey, k.passKey);
     }
@@ -96,13 +102,7 @@ public final class VkPipelineKey {
     public static VkPipelineKey base() {
         return new VkPipelineKey(
                 new VkShaderKey(0, 0, new VkVariantKey(false, false, false)),
-                null,
-                VK_CULL_MODE_NONE,
-                true,
-                true,
-                VK_COMPARE_OP_LESS_OR_EQUAL,
-                Blend.Off,
-                0 // 默认没有掩码
+                null, VK_CULL_MODE_NONE, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, Blend.Off, 0, false
         );
     }
 
@@ -111,13 +111,14 @@ public final class VkPipelineKey {
             RenderState rs,
             VkVariantKey variant,
             PassKey passKey,
-            int vertexLayoutMask) {
+            int vertexLayoutMask,
+            boolean alphaToCoverage) {
 
         VkShaderKey sk = new VkShaderKey(vertHash, fragHash, variant);
 
         if (rs == null) {
             return new VkPipelineKey(
-                    sk, passKey, VK_CULL_MODE_NONE, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, Blend.Off, vertexLayoutMask
+                    sk, passKey, VK_CULL_MODE_NONE, true, true, VK_COMPARE_OP_LESS_OR_EQUAL, Blend.Off, vertexLayoutMask, alphaToCoverage
             );
         }
 
@@ -196,6 +197,6 @@ public final class VkPipelineKey {
             }
         }
 
-        return new VkPipelineKey(sk, passKey, vkCull, depthTest, depthWrite, compareOp, blend, vertexLayoutMask);
+        return new VkPipelineKey(sk, passKey, vkCull, depthTest, depthWrite, compareOp, blend, vertexLayoutMask, alphaToCoverage);
     }
 }

@@ -13,6 +13,7 @@ import java.util.Arrays;
 
 /**
  * 负责收集和缓存来自 jME3 前端 (Renderer 接口) 的状态变更。
+ *
  * @author icyboxs
  */
 public final class FrontendStateTracker {
@@ -42,22 +43,59 @@ public final class FrontendStateTracker {
     private FrameBuffer currentFb;
     private final Matrix4f currentViewProj = new Matrix4f();
 
+    private boolean alphaToCoverage = false;
+
+    private float depthRangeStart = 0f;
+    private float depthRangeEnd = 1f;
+
+    public void setDepthRange(float start, float end) {
+        this.depthRangeStart = start;
+        this.depthRangeEnd = end;
+    }
+
+    public float getDepthRangeStart() {
+        return depthRangeStart;
+    }
+
+    public float getDepthRangeEnd() {
+        return depthRangeEnd;
+    }
+
+    public void setAlphaToCoverage(boolean value) {
+        this.alphaToCoverage = value;
+    }
+
+    public boolean getAlphaToCoverage() {
+        return alphaToCoverage;
+    }
+
     public void reset() {
-        vpX = 0; vpY = 0; vpW = -1; vpH = -1;
+        vpX = 0;
+        vpY = 0;
+        vpW = -1;
+        vpH = -1;
         clipEnabled = false;
-        clipX = 0; clipY = 0; clipW = 0; clipH = 0;
+        clipX = 0;
+        clipY = 0;
+        clipW = 0;
+        clipH = 0;
 
         clearTextureUnits();
         currentShader = null;
         currentRenderState = null;
         currentMaterial = null;
         currentFb = null;
+        alphaToCoverage = false;
+        depthRangeStart = 0f;
+        depthRangeEnd = 1f;
     }
 
     // --- State Setters ---
-
     public void setViewPort(int x, int y, int width, int height) {
-        this.vpX = x; this.vpY = y; this.vpW = width; this.vpH = height;
+        this.vpX = x;
+        this.vpY = y;
+        this.vpW = width;
+        this.vpH = height;
     }
 
     public void setClipRect(int x, int y, int width, int height) {
@@ -67,7 +105,10 @@ public final class FrontendStateTracker {
             return;
         }
         this.clipEnabled = true;
-        this.clipX = x; this.clipY = y; this.clipW = width; this.clipH = height;
+        this.clipX = x;
+        this.clipY = y;
+        this.clipW = width;
+        this.clipH = height;
     }
 
     public void clearClipRect() {
@@ -81,7 +122,9 @@ public final class FrontendStateTracker {
     }
 
     public void setBackgroundColor(ColorRGBA color) {
-        if (color != null) background.set(color);
+        if (color != null) {
+            background.set(color);
+        }
     }
 
     public void applyRenderState(RenderState state) {
@@ -121,18 +164,53 @@ public final class FrontendStateTracker {
     }
 
     // --- State Getters ---
+    public ColorRGBA getBackground() {
+        return background;
+    }
 
-    public ColorRGBA getBackground() { return background; }
-    public int getVpX() { return vpX; }
-    public int getVpY() { return vpY; }
-    public int getVpW() { return vpW; }
-    public int getVpH() { return vpH; }
-    public boolean isClipEnabled() { return clipEnabled; }
-    public int getClipX() { return clipX; }
-    public int getClipY() { return clipY; }
-    public int getClipW() { return clipW; }
-    public int getClipH() { return clipH; }
-    public FrameBuffer getCurrentFb() { return currentFb; }
+    public Shader getCurrentShader() {
+        return currentShader;
+    }
+
+    public int getVpX() {
+        return vpX;
+    }
+
+    public int getVpY() {
+        return vpY;
+    }
+
+    public int getVpW() {
+        return vpW;
+    }
+
+    public int getVpH() {
+        return vpH;
+    }
+
+    public boolean isClipEnabled() {
+        return clipEnabled;
+    }
+
+    public int getClipX() {
+        return clipX;
+    }
+
+    public int getClipY() {
+        return clipY;
+    }
+
+    public int getClipW() {
+        return clipW;
+    }
+
+    public int getClipH() {
+        return clipH;
+    }
+
+    public FrameBuffer getCurrentFb() {
+        return currentFb;
+    }
 
     /**
      * 生成当前绘制命令所需的状态快照
@@ -144,7 +222,12 @@ public final class FrontendStateTracker {
                 currentTextures[UNIT_TEX0],
                 currentTextures[UNIT_LIGHT],
                 currentTextures[UNIT_EXTRA],
-                currentMaterial
+                currentMaterial,
+                alphaToCoverage,
+                vpX, vpY, vpW, vpH,
+                clipEnabled, clipX, clipY, clipW, clipH,
+                depthRangeStart, depthRangeEnd
         );
+
     }
 }

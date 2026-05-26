@@ -9,6 +9,7 @@ import com.jme3.renderer.vulkan.pipeline.PassKey;
 import com.jme3.renderer.vulkan.resource.VkResourceFactory;
 import com.jme3.renderer.vulkan.resource.VkTexture;
 import com.jme3.renderer.vulkan.resource.VulkanDeferredReleaseQueue;
+import com.jme3.renderer.vulkan.resource.VulkanFrameBufferManager;
 import com.jme3.renderer.vulkan.resource.VulkanFrameDescriptors;
 import com.jme3.renderer.vulkan.resource.VulkanMaterialDescriptors;
 import com.jme3.renderer.vulkan.resource.VulkanMaterialManager;
@@ -46,6 +47,7 @@ public final class VulkanRuntimeState {
     public VulkanMeshManager meshManager;
     public VkTexture whiteTex;
     public VulkanTextureManager textureManager;
+    public VulkanFrameBufferManager frameBufferManager;
     public VulkanFrameDescriptors[] frameDesc;
     public VulkanMaterialDescriptors materialDesc;
     public VulkanMaterialManager materialManager;
@@ -59,9 +61,19 @@ public final class VulkanRuntimeState {
 
     public boolean vsync = true; // 默认 true
 
+    // --- sRGB 线性工作流控制开关 ---
+    public volatile boolean mainFbSrgb = false;
+    public volatile boolean linearizeSrgbImages = false;
+
+    public volatile int defaultAnisotropicFilter = 1;
+    
     public VulkanRuntimeState(AppSettings settings) {
         this.settings = settings;
-        // 取出 VSync 设置
         this.vsync = settings.isVSync();
+
+        // 初始化时可同步 jME3 的初始 Gamma 设置
+        this.mainFbSrgb = settings.isGammaCorrection();
+        this.linearizeSrgbImages = settings.isGammaCorrection();
     }
+
 }

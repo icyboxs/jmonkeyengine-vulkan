@@ -18,6 +18,8 @@ import java.nio.LongBuffer;
 import java.util.Arrays;
 
 import static org.lwjgl.vulkan.VK10.*;
+import org.lwjgl.vulkan.VkRect2D;
+import org.lwjgl.vulkan.VkViewport;
 
 public final class DrawExecutor {
 
@@ -37,16 +39,94 @@ public final class DrawExecutor {
         lastBoundSets = new long[0];
     }
 
-    public void executeList(VkCommandBuffer cmd, MemoryStack rootStack, int frameIndex, VulkanFrameInfo frame, java.util.List<DrawCmd> commandList) {
+public void executeList(VkCommandBuffer cmd, MemoryStack rootStack, int frameIndex, VulkanFrameInfo frame, java.util.List<DrawCmd> commandList) {
         VulkanPipeline lastPipeline = null;
         VkPipelineKey lastPipelineKey = null;
         float timeSeconds = (float) (System.nanoTime() * 1e-9);
+        
+        int fbW = frame.width;
+        int fbH = frame.height;
+        
+        // 【新增】：追踪当前指令的视口与裁剪状态，避免每 draw 重复下发冗余的 Vulkan API
+        int lastVpX = Integer.MIN_VALUE, lastVpY = Integer.MIN_VALUE, lastVpW = Integer.MIN_VALUE, lastVpH = Integer.MIN_VALUE;
+        float lastDepthStart = Float.NaN, lastDepthEnd = Float.NaN;
+        int lastScX = Integer.MIN_VALUE, lastScY = Integer.MIN_VALUE, lastScW = Integer.MIN_VALUE, lastScH = Integer.MIN_VALUE;
 
         for (DrawCmd dc : commandList) {
             if (!dc.isRenderable()) continue;
 
-            // 【核心修复】：为每一个 DrawCall 创建独立的 Stack 帧，执行完立即释放，杜绝爆栈！
             try (MemoryStack frameStack = rootStack.push()) {
+                
+                // ==========================================
+                // 动态执行 Viewport 和 DepthRange 变更
+                // ==========================================
+                if (dc.vpX != lastVpX || dc.vpY != lastVpY || dc.vpW != lastVpW || dc.vpH != lastVpH || dc.depthRangeStart != lastDepthStart || dc.depthRangeEnd != lastDepthEnd) {
+                    int vx = (dc.vpW > 0 && dc.vpH > 0) ? dc.vpX : 0;
+                    int vy = (dc.vpW > 0 && dc.vpH > 0) ? dc.vpY : 0;
+                    int vw = (dc.vpW > 0 && dc.vpH > 0) ? dc.vpW : fbW;
+                    int vh = (dc.vpW > 0 && dc.vpH > 0) ? dc.vpH : fbH;
+
+                    if (vx < 0) { vw += vx; vx = 0; }
+                    if (vy < 0) { vh += vy; vy = 0; }
+                    if (vx > fbW) vx = fbW;
+                    if (vy > fbH) vy = fbH;
+                    if (vx + vw > fbW) vw = fbW - vx;
+                    if (vy + vh > fbH) vh = fbH - vy;
+                    if (vw < 1) vw = 1;
+                    if (vh < 1) vh = 1;
+
+                    // 翻转 Y 轴，兼容 OpenGL 坐标系
+                    float vkVpX = (float) vx;
+                    float vkVpY = (float) (fbH - vy);
+                    float vkVpW = (float) vw;
+                    float vkVpH = (float) (-vh);
+
+                    VkViewport.Buffer vp = VkViewport.calloc(1, frameStack)
+                            .x(vkVpX).y(vkVpY).width(vkVpW).height(vkVpH)
+                            .minDepth(dc.depthRangeStart).maxDepth(dc.depthRangeEnd);
+                    
+                    vkCmdSetViewport(cmd, 0, vp);
+
+                    lastVpX = dc.vpX; lastVpY = dc.vpY; lastVpW = dc.vpW; lastVpH = dc.vpH;
+                    lastDepthStart = dc.depthRangeStart; lastDepthEnd = dc.depthRangeEnd;
+                }
+
+                // ==========================================
+                // 动态执行 Scissor (裁剪区) 变更
+                // ==========================================
+                int sx, sy, sw, sh;
+                if (dc.clipEnabled) {
+                    sx = dc.clipX;
+                    sw = dc.clipW;
+                    sh = dc.clipH;
+                    sy = fbH - dc.clipY - sh; // OpenGL 原点翻转
+                } else {
+                    int vx = (dc.vpW > 0 && dc.vpH > 0) ? dc.vpX : 0;
+                    int vy = (dc.vpW > 0 && dc.vpH > 0) ? dc.vpY : 0;
+                    int vw = (dc.vpW > 0 && dc.vpH > 0) ? dc.vpW : fbW;
+                    int vh = (dc.vpW > 0 && dc.vpH > 0) ? dc.vpH : fbH;
+                    sx = vx; sy = vy; sw = vw; sh = vh;
+                }
+
+                if (sx < 0) { sw += sx; sx = 0; }
+                if (sy < 0) { sh += sy; sy = 0; }
+                if (sx > fbW) sx = fbW;
+                if (sy > fbH) sy = fbH;
+                if (sx + sw > fbW) sw = fbW - sx;
+                if (sy + sh > fbH) sh = fbH - sy;
+                if (sw < 0) sw = 0;
+                if (sh < 0) sh = 0;
+
+                if (sx != lastScX || sy != lastScY || sw != lastScW || sh != lastScH) {
+                    VkRect2D.Buffer sc = VkRect2D.calloc(1, frameStack);
+                    sc.offset().set(sx, sy);
+                    sc.extent().set(sw, sh);
+                    
+                    vkCmdSetScissor(cmd, 0, sc);
+
+                    lastScX = sx; lastScY = sy; lastScW = sw; lastScH = sh;
+                }
+
                 if (lastPipelineKey == null || !lastPipelineKey.equals(dc.pipelineKey)) {
                     VulkanPipeline pipeline = frame.runtime.getOrCreatePipeline(dc.pipelineKey, dc.finalVertSrc, dc.finalFragSrc);
                     if (pipeline == null || pipeline.getGraphicsPipeline() == 0L) continue;

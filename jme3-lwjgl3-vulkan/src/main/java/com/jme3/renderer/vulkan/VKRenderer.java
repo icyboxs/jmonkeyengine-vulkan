@@ -116,6 +116,7 @@ public final class VKRenderer implements Renderer, VkCommandRecorder {
         safePutLimit("MaxFragmentUniformVectors", 4096);
         safePutLimit("MaxVertexAttribs", 16);
         safePutLimit("MaxSamples", 4);
+        safeAddCap(Caps.Srgb);
     }
 
     private void safeAddCap(Caps c) {
@@ -308,149 +309,256 @@ public final class VKRenderer implements Renderer, VkCommandRecorder {
 
     // --- 空实现或未支持的方法 ---
     @Override
+    @Deprecated
     public void invalidateState() {
+        //用于清空 OpenGL 隐藏的驱动状态缓存。您的 DrawCmdBuilder 每次 Draw 都是全新构建的 RendererStateSnapshot 快照，天然免疫状态残留问题。
     }
 
     @Override
     public void setDepthRange(float start, float end) {
+        stateTracker.setDepthRange(start, end);
     }
 
     @Override
+    @Deprecated
     public void postFrame() {
+        //以前用来挂载 glfwSwapBuffers 的地方。现在呈现逻辑已被您的 VulkanFrameDriver.renderOneFrame() 完美封装（包含 Semaphore 和 Fence 轮转）
     }
 
     @Override
     public void deleteShader(Shader shader) {
+        if (shader == null) {
+            return;
+        }
+
+        // 1. 防御性编程：如果前端刚好正在绑定这个即将被销毁的 Shader，强制将其解绑
+        // 杜绝悬空指针导致后续构建 DrawCmd 时引发崩溃
+        if (stateTracker.getCurrentShader() == shader) {
+            stateTracker.setShader(null);
+        }
+
+        // 2. 从命令构建器的前端缓存中主动移除对该 Shader 对象的引用
+        if (drawCmdBuilder != null) {
+            drawCmdBuilder.deleteShader(shader);
+        }
+
+        // 3. 标记 jME3 NativeObject 已被回收，从 NativeObjectManager 的追踪队列中安全移除
+        shader.resetObject();
+
+        // 注：
+        // 在这套 Vulkan 架构中，底层的 VkShaderModule 和 VulkanPipeline 是完全
+        // 基于 GLSL 源码的 Hash 值在 VulkanShaders 和 VulkanPipelineManager 中全局去重缓存的。
+        // 我们不在此处销毁底层的 Vulkan 资源，而是交由 VulkanRuntime 在 cleanup 时统一销毁。
+        // 这样既能最大化复用，又能避免运行时出现 "销毁又重复编译" 导致的严重掉帧卡顿。
     }
 
     @Override
     public void deleteShaderSource(Shader.ShaderSource source) {
+        if (source == null) {
+            return;
+        }
+
+        // 单纯告知 jME3 引擎层该对象已被释放
+        // Vulkan 后端不单独管理零碎的 ShaderSource 句柄（不像 OpenGL 的 glCreateShader）。
+        // 我们是将完整的 Shader 提取组装后统一编译为 SPIR-V 并由 VulkanShaders 缓存的。
+        source.resetObject();
     }
 
     @Override
     public void copyFrameBuffer(FrameBuffer src, FrameBuffer dst, boolean copyDepth) {
+        copyFrameBuffer(src, dst, true, copyDepth);
     }
 
     @Override
     public void copyFrameBuffer(FrameBuffer src, FrameBuffer dst, boolean copyColor, boolean copyDepth) {
+        if (!copyColor && !copyDepth) {
+            return;
+        }
+
+        // 生成命令并排入队列，等待 RecordFrame 阶段在 RenderPass 之外统一执行
+        com.jme3.renderer.vulkan.cmd.CopyCmd cmd = com.jme3.renderer.vulkan.cmd.CopyCmd.acquire();
+        cmd.src = src;
+        cmd.dst = dst;
+        cmd.copyColor = copyColor;
+        cmd.copyDepth = copyDepth;
+        drawQueue.enqueueCopy(cmd);
     }
 
     @Override
+    @Deprecated
     public void setMainFrameBufferOverride(FrameBuffer fb) {
     }
 
     @Override
     public void readFrameBuffer(FrameBuffer fb, ByteBuffer byteBuf) {
+        // 如果 JME3 没有要求特定格式，就默认按最标准的 RGBA8 返回
+        readFrameBufferWithFormat(fb, byteBuf, Image.Format.RGBA8);
     }
 
     @Override
     public void readFrameBufferWithFormat(FrameBuffer fb, ByteBuffer byteBuf, Image.Format format) {
+        if (byteBuf == null || format == null) {
+            return;
+        }
+        try {
+            runtime.readFrameBuffer(fb, byteBuf, format);
+        } catch (Throwable t) {
+            LOGGER.log(Level.WARNING, "Failed to read FrameBuffer pixels", t);
+        }
     }
 
     @Override
     public void deleteFrameBuffer(FrameBuffer fb) {
-    }
+        if (fb == null) {
+            return;
+        }
 
-    public void updateBufferData(BufferObject bo) {
-    }
+        // 如果前端刚好正在绑定这块即将被销毁的 FrameBuffer，强制将其解绑。
+        // 这是为了防止出现悬空指针（Dangling Pointer）导致后续 Draw 渲染时找不到显存而发生崩溃
+        if (stateTracker.getCurrentFb() == fb) {
+            stateTracker.setFrameBuffer(null);
+        }
 
-    @Override
-    public void deleteBuffer(BufferObject bo) {
+        try {
+            // 委托给 Runtime 进行底层显存的安全销毁，通过延迟队列销毁机制防止 Vulkan 崩溃
+            runtime.deleteFrameBuffer(fb);
+        } catch (Throwable t) {
+            LOGGER.log(Level.WARNING, "Failed to delete FrameBuffer", t);
+        }
     }
+    
+    
+
+
 
     @Override
     public void popDebugGroup() {
+        //Vulkan 原生支持 vkCmdBeginDebugUtilsLabelEXT，但性价比极低。现代 Vulkan 开发严重依赖 RenderDoc / Nsight 等外部工具，引擎层的标签打点可以省略。保持为空
     }
 
     @Override
     public void pushDebugGroup(String name) {
+        //Vulkan 原生支持 vkCmdBeginDebugUtilsLabelEXT，但性价比极低。现代 Vulkan 开发严重依赖 RenderDoc / Nsight 等外部工具，引擎层的标签打点可以省略。保持为空
     }
 
     @Override
+    @Deprecated
     public void resetGLObjects() {
+        //用于处理 OpenGL Context 丢失。您的 Vulkan 架构中，设备丢失恢复完全由 VulkanFrameDriver 触发 Swapchain Recreate，且 VMA 统一管理内存，不需要这种全局的旧式 ID 重置。
     }
 
     @Override
     public void setDefaultAnisotropicFilter(int level) {
-    }
-
-    @Override
-    public void setAlphaToCoverage(boolean value) {
-    }
-
-    @Override
-    public void setMainFrameBufferSrgb(boolean srgb) {
-    }
-
-    @Override
-    public void setLinearizeSrgbImages(boolean linearize) {
-    }
-
-    @Override
-    public int[] generateProfilingTasks(int numTasks) {
-        return new int[0];
-    }
-
-    @Override
-    public void startProfiling(int taskId) {
-    }
-
-    @Override
-    public void stopProfiling() {
-    }
-
-    @Override
-    public long getProfilingTime(int taskId) {
-        return 0;
-    }
-
-    @Override
-    public boolean isTaskResultAvailable(int taskId) {
-        return false;
-    }
-
-    @Override
-    public boolean getAlphaToCoverage() {
-        return false;
+        runtime.setDefaultAnisotropicFilter(level);
     }
 
     @Override
     public int getDefaultAnisotropicFilter() {
-        return 0;
+        return runtime.getDefaultAnisotropicFilter();
     }
 
     @Override
-    public float getMaxLineWidth() {
-        return 1.0f;
+    public void setAlphaToCoverage(boolean value) {
+        stateTracker.setAlphaToCoverage(value);
     }
 
     @Override
-    public boolean isLinearizeSrgbImages() {
-        return false;
+    public boolean getAlphaToCoverage() {
+        return stateTracker.getAlphaToCoverage();
+    }
+
+    @Override
+    public void setMainFrameBufferSrgb(boolean srgb) {
+        runtime.setMainFrameBufferSrgb(srgb);
     }
 
     @Override
     public boolean isMainFrameBufferSrgb() {
+        return runtime.isMainFrameBufferSrgb();
+    }
+
+    @Override
+    public void setLinearizeSrgbImages(boolean linearize) {
+        runtime.setLinearizeSrgbImages(linearize);
+    }
+
+    @Override
+    public boolean isLinearizeSrgbImages() {
+        return runtime.isLinearizeSrgbImages();
+    }
+
+    @Override
+    @Deprecated
+    public int[] generateProfilingTasks(int numTasks) {
+        //这是 JME3 引擎自带的 GPU 时间线分析器。在 Vulkan 中实现起来需要使用 VkQueryPool 写 Timestamp，还要处理乱序队列同步，性价比极低。现代开发应直接使用 RenderDoc 或 Nsight 等外部工具。保持返回 0 / false / new int[0] 即可。
+        return new int[0];
+    }
+
+    @Override
+    @Deprecated
+    public void startProfiling(int taskId) {
+        //这是 JME3 引擎自带的 GPU 时间线分析器。在 Vulkan 中实现起来需要使用 VkQueryPool 写 Timestamp，还要处理乱序队列同步，性价比极低。现代开发应直接使用 RenderDoc 或 Nsight 等外部工具。保持返回 0 / false / new int[0] 即可。
+    }
+
+    @Override
+    @Deprecated
+    public void stopProfiling() {
+        //这是 JME3 引擎自带的 GPU 时间线分析器。在 Vulkan 中实现起来需要使用 VkQueryPool 写 Timestamp，还要处理乱序队列同步，性价比极低。现代开发应直接使用 RenderDoc 或 Nsight 等外部工具。保持返回 0 / false / new int[0] 即可。
+    }
+
+    @Override
+    @Deprecated
+    public long getProfilingTime(int taskId) {
+        //这是 JME3 引擎自带的 GPU 时间线分析器。在 Vulkan 中实现起来需要使用 VkQueryPool 写 Timestamp，还要处理乱序队列同步，性价比极低。现代开发应直接使用 RenderDoc 或 Nsight 等外部工具。保持返回 0 / false / new int[0] 即可。
+        return 0;
+    }
+
+    @Override
+    @Deprecated
+    public boolean isTaskResultAvailable(int taskId) {
+        //内置 GPU 耗时查询。在 Vulkan 中通过 VkQueryPool 写 Timestamp 并在乱序队列中同步非常复杂且开销大。这部分功能完全交给 RenderDoc 等外部抓帧工具即可。返回 new int[0]、false 或 0。
         return false;
     }
 
     @Override
+    public float getMaxLineWidth() {
+        //现代 Vulkan 推荐线宽永远固定为 1.0f。大于 1 的线宽需要显卡支持 wideLines 特性（Mac 和移动端大多不支持）。直接保持 return 1.0f;
+        return 1.0f;
+    }
+
+    @Override
+    @Deprecated
     public void setTextureImage(int unit, TextureImage tex) throws TextureUnitException {
+        //Compute Shader 图像读写。当前渲染器架构专注图形管线（Graphics Pipeline），尚未实现 Compute Shader 的 Image Load/Store 功能。保持为空。
     }
 
     @Override
+    @Deprecated
     public void updateShaderStorageBufferObjectData(com.jme3.shader.bufferobject.BufferObject bo) {
+    
     }
 
     @Override
+    @Deprecated
     public void updateUniformBufferObjectData(com.jme3.shader.bufferobject.BufferObject bo) {
+        //直接的 UBO/SSBO 绑定。在这套架构中，UBO 的数据（如 WVP、材质参数）是由 DrawCmdBuilder 从 Shader 和 Material 中提取并写入 dc.uboData，然后通过高频提供者动态写入的。不需要按 OpenGL 的方式单独绑定这些对象。保持为空。
     }
 
     @Override
+    @Deprecated
     public void setShaderStorageBufferObject(int bindingPoint, com.jme3.shader.bufferobject.BufferObject bufferObject) {
+        //直接的 UBO/SSBO 绑定。在这套架构中，UBO 的数据（如 WVP、材质参数）是由 DrawCmdBuilder 从 Shader 和 Material 中提取并写入 dc.uboData，然后通过高频提供者动态写入的。不需要按 OpenGL 的方式单独绑定这些对象。保持为空。
     }
 
     @Override
+    @Deprecated
     public void setUniformBufferObject(int bindingPoint, com.jme3.shader.bufferobject.BufferObject bufferObject) {
+        //直接的 UBO/SSBO 绑定。在这套架构中，UBO 的数据（如 WVP、材质参数）是由 DrawCmdBuilder 从 Shader 和 Material 中提取并写入 dc.uboData，然后通过高频提供者动态写入的。不需要按 OpenGL 的方式单独绑定这些对象。保持为空。
+    }
+
+    @Override
+    @Deprecated
+    public void deleteBuffer(BufferObject bo) {
+    //Vulkan 架构中，UBO 的数据流向已经被彻底重构，走的是全动态、数据驱动的高性能路径，完美绕过了 jME3 原生的 BufferObject
     }
 }

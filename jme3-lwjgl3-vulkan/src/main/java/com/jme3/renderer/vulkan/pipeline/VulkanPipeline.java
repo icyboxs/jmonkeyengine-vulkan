@@ -216,7 +216,9 @@ public final class VulkanPipeline {
                     .sType$Default().lineWidth(1.0f).cullMode(key.cullMode).frontFace(VK_FRONT_FACE_COUNTER_CLOCKWISE);
 
             VkPipelineMultisampleStateCreateInfo ms = VkPipelineMultisampleStateCreateInfo.calloc(stack)
-                    .sType$Default().rasterizationSamples(key.passKey.samples);
+                    .sType$Default()
+                    .rasterizationSamples(key.passKey.samples)
+                    .alphaToCoverageEnable(key.alphaToCoverage);
 
             // 强行覆盖透明/GUI物体的深度测试
             boolean isTransparent = (key.blend != VkPipelineKey.Blend.Off);

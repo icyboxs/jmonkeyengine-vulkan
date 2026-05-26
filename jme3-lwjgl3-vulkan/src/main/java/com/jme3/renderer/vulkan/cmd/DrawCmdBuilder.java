@@ -75,21 +75,32 @@ public final class DrawCmdBuilder {
         this.runtime = runtime;
     }
 
+    public void deleteShader(Shader shader) {
+        if (shader != null) {
+            shaderCache.remove(shader);
+        }
+    }
+    
     public DrawCmd build(Mesh mesh, int lod, int count, VertexBuffer[] instanceData, RendererStateSnapshot s) {
         if (s == null) {
-            return build(mesh, lod, count, instanceData, null, null, null, null, null, null, null, null);
+            return build(mesh, lod, count, instanceData, null, null, null, null, null, null, null, null, false,
+                    0, 0, -1, -1, false, 0, 0, 0, 0, 0f, 1f);
         }
-        return build(mesh, lod, count, instanceData, s.shader, s.renderState, s.tex0, s.light, s.extra, s.material, s.wvp, s.color);
+        return build(mesh, lod, count, instanceData, s.shader, s.renderState, s.tex0, s.light, s.extra, s.material, s.wvp, s.color, s.alphaToCoverage,
+                s.vpX, s.vpY, s.vpW, s.vpH, s.clipEnabled, s.clipX, s.clipY, s.clipW, s.clipH, s.depthRangeStart, s.depthRangeEnd);
     }
 
     public DrawCmd build(Mesh mesh, int lod, int count, VertexBuffer[] instanceData,
             Shader currentShader, RenderState currentRenderState, Texture currentTex0, Texture currentLight, Texture currentExtra) {
-        return build(mesh, lod, count, instanceData, currentShader, currentRenderState, currentTex0, currentLight, currentExtra, null, null, null);
+        return build(mesh, lod, count, instanceData, currentShader, currentRenderState, currentTex0, currentLight, currentExtra, null, null, null, false,
+                0, 0, -1, -1, false, 0, 0, 0, 0, 0f, 1f);
     }
 
     private DrawCmd build(Mesh mesh, int lod, int count, VertexBuffer[] instanceData,
             Shader currentShader, RenderState currentRenderState, Texture currentTex0, Texture currentLight, Texture currentExtra,
-            Material currentMaterial, Matrix4f overrideWvp, ColorRGBA overrideColor) {
+            Material currentMaterial, Matrix4f overrideWvp, ColorRGBA overrideColor, boolean alphaToCoverage,
+            int vpX, int vpY, int vpW, int vpH, boolean clipEnabled, int clipX, int clipY, int clipW, int clipH,
+            float depthRangeStart, float depthRangeEnd) {
 
         DrawCmd dc = DrawCmd.acquire();
         dc.mesh = mesh;
@@ -98,6 +109,18 @@ public final class DrawCmdBuilder {
         dc.instanceData = instanceData;
         dc.objectId = (mesh != null) ? System.identityHashCode(mesh) : 0;
         dc.renderState = currentRenderState;
+
+        dc.vpX = vpX;
+        dc.vpY = vpY;
+        dc.vpW = vpW;
+        dc.vpH = vpH;
+        dc.clipEnabled = clipEnabled;
+        dc.clipX = clipX;
+        dc.clipY = clipY;
+        dc.clipW = clipW;
+        dc.clipH = clipH;
+        dc.depthRangeStart = depthRangeStart;
+        dc.depthRangeEnd = depthRangeEnd;
 
         if (currentShader != null) {
             CachedShaderData csd = shaderCache.get(currentShader);
@@ -182,7 +205,7 @@ public final class DrawCmdBuilder {
             }
 
             dc.pipelineKey = VkPipelineKey.fromHashes(
-                    dc.vertHash, dc.fragHash, dc.renderState, dc.variant, runtime.getDefaultPassKey(), vertexMask
+                    dc.vertHash, dc.fragHash, dc.renderState, dc.variant, runtime.getDefaultPassKey(), vertexMask, alphaToCoverage
             );
         }
 

@@ -33,7 +33,7 @@ import java.nio.ByteBuffer;
 
 public class VulkanDynamicResourceScaleTest extends LegacyApplication {
 
-    private static final String MAT_DEF = "Common/MatDefs/Misc/VKUnshaded.j3md";
+    private static final String MAT_DEF = "VkCommon/MatDefs/Misc/VKUnshaded.j3md";
 
     // 3D 场景元素
     private final Node rootNode = new Node("Root");
