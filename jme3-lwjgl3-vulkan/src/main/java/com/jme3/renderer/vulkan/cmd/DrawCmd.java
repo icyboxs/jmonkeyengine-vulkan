@@ -12,7 +12,6 @@ import com.jme3.texture.Texture;
 
 public final class DrawCmd {
 
-    // 【核心优化】：对象池化，杜绝运行时 new
     private static final DrawCmd[] POOL = new DrawCmd[65536];
     private static int poolPtr = -1;
 
@@ -22,46 +21,25 @@ public final class DrawCmd {
     public float depthRangeStart, depthRangeEnd;
     
     public static DrawCmd acquire() {
-        synchronized (POOL) {
-            if (poolPtr >= 0) {
-                return POOL[poolPtr--];
-            }
-        }
+        synchronized (POOL) { if (poolPtr >= 0) return POOL[poolPtr--]; }
         return new DrawCmd();
     }
 
     public void recycle() {
-        mesh = null;
-        instanceData = null;
-        renderState = null;
-        vertSrc = null;
-        fragSrc = null;
-        finalVertSrc = null;
-        finalFragSrc = null;
-        jmeTex0Snapshot = null;
-        jmeLightSnapshot = null;
-        jmeExtraSnapshot = null;
-        materialKeySnapshot = null;
-        materialResolvePlan = null;
-        variant = null;
-        pipelineKey = null;
-        materialBatchKey = null;
-        for (int i = 0; i < customImageCount; i++) {
-            customImageSlots[i] = null;
-            customImageTextures[i] = null;
-        }
+        mesh = null; instanceData = null; renderState = null;
+        vertSrc = null; fragSrc = null; finalVertSrc = null; finalFragSrc = null;
+        jmeTex0Snapshot = null; jmeLightSnapshot = null; jmeExtraSnapshot = null;
+        materialKeySnapshot = null; materialResolvePlan = null;
+        variant = null; pipelineKey = null; materialBatchKey = null;
+        for (int i = 0; i < customImageCount; i++) { customImageSlots[i] = null; customImageTextures[i] = null; }
         customImageCount = 0;
+        
+        for (int i = 0; i < 16; i++) { ssbos[i] = null; images[i] = null; }
 
-        vpX = 0; vpY = 0; vpW = 0; vpH = 0;
-        clipEnabled = false;
-        clipX = 0; clipY = 0; clipW = 0; clipH = 0;
+        vpX = 0; vpY = 0; vpW = 0; vpH = 0; clipEnabled = false; clipX = 0; clipY = 0; clipW = 0; clipH = 0;
         depthRangeStart = 0f; depthRangeEnd = 0f;
         
-        synchronized (POOL) {
-            if (poolPtr < POOL.length - 1) {
-                POOL[++poolPtr] = this;
-            }
-        }
+        synchronized (POOL) { if (poolPtr < POOL.length - 1) POOL[++poolPtr] = this; }
     }
 
     public Mesh mesh;
@@ -78,7 +56,9 @@ public final class DrawCmd {
     public MaterialResolvePlan materialResolvePlan;
     public boolean useWhiteTex0, useWhiteLight, useWhiteExtra;
 
-    // 【优化】：定长预分配内存，拒绝 new
+    public final com.jme3.shader.bufferobject.BufferObject[] ssbos = new com.jme3.shader.bufferobject.BufferObject[16];
+    public final com.jme3.texture.TextureImage[] images = new com.jme3.texture.TextureImage[16];
+
     public final Matrix4f wvpSnapshot = new Matrix4f();
     public final ColorRGBA colorSnapshot = new ColorRGBA();
     public final float[] uboData = new float[256];
@@ -90,12 +70,9 @@ public final class DrawCmd {
     public MaterialBatchKey materialBatchKey;
     public int objectId;
     public int submissionIndex;
-
-    // 【极速比较】：数字排序键，取代 O(N) 属性比较
     public long sortKey;
 
     public long tex0SamplerSnapshot, lightSamplerSnapshot, extraSamplerSnapshot;
-
     public final ParamBindingPlan.BindingSlot[] customImageSlots = new ParamBindingPlan.BindingSlot[16];
     public final Texture[] customImageTextures = new Texture[16];
     public int customImageCount = 0;

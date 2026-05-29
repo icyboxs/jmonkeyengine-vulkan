@@ -315,4 +315,31 @@ public final class VulkanDescriptors {
             vkUpdateDescriptorSets(vk.device(), wr, null);
         }
     }
+    public void writeSingleStorageBufferToSet(long dstSet, int dstBinding, long buffer, long offset, long range) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            org.lwjgl.vulkan.VkDescriptorBufferInfo.Buffer bi = org.lwjgl.vulkan.VkDescriptorBufferInfo.calloc(1, stack)
+                    .buffer(buffer).offset(offset).range(range);
+
+            org.lwjgl.vulkan.VkWriteDescriptorSet.Buffer wr = org.lwjgl.vulkan.VkWriteDescriptorSet.calloc(1, stack);
+            wr.get(0).sType$Default().dstSet(dstSet).dstBinding(dstBinding).dstArrayElement(0)
+                    .descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER)
+                    .descriptorCount(1).pBufferInfo(bi);
+
+            vkUpdateDescriptorSets(vk.device(), wr, null);
+        }
+    }
+
+    public void writeSingleStorageImageToSet(long dstSet, int dstBinding, VkTexture tex) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            org.lwjgl.vulkan.VkDescriptorImageInfo.Buffer ii = org.lwjgl.vulkan.VkDescriptorImageInfo.calloc(1, stack)
+                    .imageView(tex.view).imageLayout(tex.imageLayout); // 使用挂载了正确图像数据的 Layout 枚举进行匹配
+
+            org.lwjgl.vulkan.VkWriteDescriptorSet.Buffer wr = org.lwjgl.vulkan.VkWriteDescriptorSet.calloc(1, stack);
+            wr.get(0).sType$Default().dstSet(dstSet).dstBinding(dstBinding).dstArrayElement(0)
+                    .descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+                    .descriptorCount(1).pImageInfo(ii);
+
+            vkUpdateDescriptorSets(vk.device(), wr, null);
+        }
+    }
 }

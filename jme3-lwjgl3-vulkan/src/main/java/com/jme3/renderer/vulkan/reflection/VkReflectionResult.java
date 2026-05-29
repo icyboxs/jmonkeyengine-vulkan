@@ -5,38 +5,25 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 
-/**
- * Runtime shader reflection result (Stage S1: data model only).
- *
- * 当前仅用于日志观察，不改变现有固定 ABI 行为。
- */
 public final class VkReflectionResult {
 
-    /**
-     * 来自哪个 shader 对（便于日志定位）
-     */
     public final int vertSpvHash;
     public final int fragSpvHash;
+    public final int compSpvHash;
 
-    /**
-     * descriptor 绑定信息（set/binding/type/stage）
-     */
     public final List<DescriptorBinding> descriptorBindings;
-
     public final List<VkPushConstantRangeInfo> pushConstantRanges;
-
-    /**
-     * UBO 成员偏移信息（先按 block+member 记录）
-     */
     public final List<UboMember> uboMembers;
 
     public VkReflectionResult(int vertSpvHash,
             int fragSpvHash,
+            int compSpvHash,
             List<DescriptorBinding> descriptorBindings,
             List<UboMember> uboMembers,
             List<VkPushConstantRangeInfo> pushConstantRanges) {
         this.vertSpvHash = vertSpvHash;
         this.fragSpvHash = fragSpvHash;
+        this.compSpvHash = compSpvHash;
         this.descriptorBindings = immutableCopy(descriptorBindings);
         this.uboMembers = immutableCopy(uboMembers);
         this.pushConstantRanges = immutableCopy(pushConstantRanges);
@@ -46,6 +33,7 @@ public final class VkReflectionResult {
         return new VkReflectionResult(
                 vertSpvHash,
                 fragSpvHash,
+                0,
                 Collections.emptyList(),
                 Collections.emptyList(),
                 Collections.emptyList()
@@ -63,9 +51,9 @@ public final class VkReflectionResult {
 
         public final int set;
         public final int binding;
-        public final String type;      // e.g. UNIFORM_BUFFER, COMBINED_IMAGE_SAMPLER
-        public final int stageFlags;   // Vulkan stage bitmask
-        public final String name;      // 可选，可能为空
+        public final String type;
+        public final int stageFlags;
+        public final String name;
 
         public DescriptorBinding(int set, int binding, String type, int stageFlags, String name) {
             this.set = set;
@@ -108,10 +96,10 @@ public final class VkReflectionResult {
 
     public static final class UboMember {
 
-        public final String blockName;   // e.g. PerDraw
-        public final String memberName;  // e.g. g_Time
-        public final int offset;         // byte offset
-        public final int size;           // byte size（未知可填 -1）
+        public final String blockName;   
+        public final String memberName;  
+        public final int offset;         
+        public final int size;           
 
         public UboMember(String blockName, String memberName, int offset, int size) {
             this.blockName = blockName;
@@ -153,10 +141,10 @@ public final class VkReflectionResult {
     public String toString() {
         return "VkReflectionResult{vertSpvHash=" + vertSpvHash
                 + ", fragSpvHash=" + fragSpvHash
+                + ", compSpvHash=" + compSpvHash
                 + ", descriptorBindings=" + descriptorBindings.size()
                 + ", uboMembers=" + uboMembers.size()
                 + ", pushConstantRanges=" + pushConstantRanges.size()
                 + '}';
     }
-
 }

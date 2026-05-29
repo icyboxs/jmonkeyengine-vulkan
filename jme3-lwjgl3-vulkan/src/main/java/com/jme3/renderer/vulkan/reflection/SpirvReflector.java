@@ -12,29 +12,15 @@ import java.util.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import static org.lwjgl.vulkan.VK10.VK_SHADER_STAGE_COMPUTE_BIT;
 import static org.lwjgl.vulkan.VK10.VK_SHADER_STAGE_FRAGMENT_BIT;
 import static org.lwjgl.vulkan.VK10.VK_SHADER_STAGE_VERTEX_BIT;
 
-/**
- * SpirvReflector
- *
- * 真实反射（兼容当前 LWJGL-spvc 绑定）： - uniform_buffers -> UNIFORM_BUFFER_DYNAMIC -
- * sampled_images / separate_images -> COMBINED_IMAGE_SAMPLER（Phase A 实用优先） -
- * push constants declared size（失败回退16） - UBO members（Phase C，失败不阻断） - 任意异常
- * fallback，不阻断渲染
- */
 public final class SpirvReflector {
 
     private static final Logger LOGGER = Logger.getLogger(SpirvReflector.class.getName());
 
     public VkReflectionResult reflect(ByteBuffer vertSpv, ByteBuffer fragSpv, int vertHash, int fragHash) {
-        if (LOGGER.isLoggable(Level.FINE)) {
-            LOGGER.fine("[SpirvReflector] called vSpv="
-                    + (vertSpv != null ? vertSpv.remaining() : 0)
-                    + " fSpv="
-                    + (fragSpv != null ? fragSpv.remaining() : 0));
-        }
-
         try {
             List<VkReflectionResult.DescriptorBinding> allBindings = new ArrayList<>();
             List<VkReflectionResult.UboMember> allUboMembers = new ArrayList<>();
@@ -76,15 +62,10 @@ public final class SpirvReflector {
                     )
             );
 
-            if (LOGGER.isLoggable(Level.FINE)) {
-                LOGGER.fine("[SpirvReflector] reflected bindings=" + mergedBindings.size()
-                        + " uboMembers=" + mergedUboMembers.size()
-                        + " pcSize=" + pcSize);
-            }
-
             return new VkReflectionResult(
                     vertHash,
                     fragHash,
+                    0,
                     mergedBindings,
                     mergedUboMembers,
                     pcs
@@ -92,6 +73,51 @@ public final class SpirvReflector {
         } catch (Throwable t) {
             LOGGER.log(Level.WARNING, "[SpirvReflector] real reflection failed, fallback.", t);
             return fallbackResult(vertHash, fragHash);
+        }
+    }
+
+    public VkReflectionResult reflectCompute(ByteBuffer compSpv, int compHash) {
+        try {
+            List<VkReflectionResult.DescriptorBinding> allBindings = new ArrayList<>();
+            List<VkReflectionResult.UboMember> allUboMembers = new ArrayList<>();
+
+            int pcSize = 0;
+
+            if (compSpv != null && compSpv.remaining() > 0) {
+                StageResult r = reflectStage(compSpv, VK_SHADER_STAGE_COMPUTE_BIT);
+                allBindings.addAll(r.bindings);
+                allUboMembers.addAll(r.uboMembers);
+                pcSize = r.pushConstantSize;
+            }
+
+            if (allBindings.isEmpty()) {
+                return new VkReflectionResult(0, 0, compHash, Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
+            }
+
+            List<VkReflectionResult.DescriptorBinding> mergedBindings = mergeBindings(allBindings);
+            List<VkReflectionResult.UboMember> mergedUboMembers = dedupUboMembers(allUboMembers);
+
+            pcSize = align4(Math.max(16, pcSize));
+
+            List<VkPushConstantRangeInfo> pcs = Collections.singletonList(
+                    new VkPushConstantRangeInfo(
+                            0,
+                            pcSize,
+                            VK_SHADER_STAGE_COMPUTE_BIT
+                    )
+            );
+
+            return new VkReflectionResult(
+                    0,
+                    0,
+                    compHash,
+                    mergedBindings,
+                    mergedUboMembers,
+                    pcs
+            );
+        } catch (Throwable t) {
+            LOGGER.log(Level.WARNING, "[SpirvReflector] compute reflection failed.", t);
+            return new VkReflectionResult(0, 0, compHash, Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
         }
     }
 
@@ -133,7 +159,6 @@ public final class SpirvReflector {
                         "spvc_compiler_create_shader_resources");
                 long resources = pResources.get(0);
 
-                // 1) UBO descriptors
                 reflectResourceList(
                         compiler,
                         resources,
@@ -143,7 +168,6 @@ public final class SpirvReflector {
                         bindings
                 );
 
-                // 2) sampled images
                 reflectResourceList(
                         compiler,
                         resources,
@@ -153,7 +177,6 @@ public final class SpirvReflector {
                         bindings
                 );
 
-                // 3) separate images（Phase A 工程化并入 combined）
                 reflectResourceList(
                         compiler,
                         resources,
@@ -163,39 +186,28 @@ public final class SpirvReflector {
                         bindings
                 );
 
-                // 4) separate samplers 仅诊断
-                if (LOGGER.isLoggable(Level.FINE)) {
-                    try (MemoryStack s2 = MemoryStack.stackPush()) {
-                        PointerBuffer pList = s2.mallocPointer(1);
-                        PointerBuffer pCount = s2.mallocPointer(1);
-                        int rc = Spvc.spvc_resources_get_resource_list_for_type(
-                                resources,
-                                Spvc.SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
-                                pList,
-                                pCount
-                        );
-                        if (rc == Spvc.SPVC_SUCCESS) {
-                            int cnt = (int) pCount.get(0);
-                            if (cnt > 0) {
-                                LOGGER.fine("[SpirvReflector] separate_samplers count=" + cnt + " (ignored)");
-                            }
-                        }
-                    } catch (Throwable ignored) {
-                    }
-                }
+                reflectResourceList(
+                        compiler,
+                        resources,
+                        Spvc.SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
+                        "STORAGE_BUFFER",
+                        stageFlag,
+                        bindings
+                );
 
-                // 5) push constant size
+                reflectResourceList(
+                        compiler,
+                        resources,
+                        Spvc.SPVC_RESOURCE_TYPE_STORAGE_IMAGE,
+                        "STORAGE_IMAGE",
+                        stageFlag,
+                        bindings
+                );
+
                 pushConstantSize = reflectPushConstantSize(compiler, resources);
 
-                // 6) UBO members（Phase C）
                 reflectUboMembers(compiler, resources, uboMembers);
 
-                if (LOGGER.isLoggable(Level.FINE)) {
-                    LOGGER.fine("[SpirvReflector] stage=" + stageFlag
-                            + " rawBindings=" + bindings.size()
-                            + " rawUboMembers=" + uboMembers.size()
-                            + " pcSize=" + pushConstantSize);
-                }
             } finally {
                 Spvc.spvc_context_destroy(context);
             }
@@ -242,9 +254,6 @@ public final class SpirvReflector {
             }
             return maxSize;
         } catch (Throwable t) {
-            if (LOGGER.isLoggable(Level.FINE)) {
-                LOGGER.log(Level.FINE, "[SpirvReflector] reflect push constant size failed.", t);
-            }
             return 0;
         }
     }
@@ -268,20 +277,7 @@ public final class SpirvReflector {
 
             int count = (int) pCount.get(0);
             if (count <= 0) {
-                if (LOGGER.isLoggable(Level.INFO)) {
-                    LOGGER.info("[ReflectDiag] stage=" + stageName(stageFlag)
-                            + " resourceType=" + resourceType
-                            + " mappedType=" + mappedType
-                            + " count=0");
-                }
                 return;
-            }
-
-            if (LOGGER.isLoggable(Level.INFO)) {
-                LOGGER.info("[ReflectDiag] stage=" + stageName(stageFlag)
-                        + " resourceType=" + resourceType
-                        + " mappedType=" + mappedType
-                        + " count=" + count);
             }
 
             SpvcReflectedResource.Buffer list = SpvcReflectedResource.create(pList.get(0), count);
@@ -297,14 +293,6 @@ public final class SpirvReflector {
                     name = "set" + set + "_binding" + binding;
                 }
 
-                if (LOGGER.isLoggable(Level.INFO)) {
-                    LOGGER.info("[ReflectDiag] stage=" + stageName(stageFlag)
-                            + " set=" + set
-                            + " binding=" + binding
-                            + " type=" + mappedType
-                            + " name=" + name);
-                }
-
                 out.add(new VkReflectionResult.DescriptorBinding(
                         set,
                         binding,
@@ -316,20 +304,6 @@ public final class SpirvReflector {
         }
     }
 
-    private static String stageName(int stageFlag) {
-        if (stageFlag == VK_SHADER_STAGE_VERTEX_BIT) {
-            return "vert";
-        }
-        if (stageFlag == VK_SHADER_STAGE_FRAGMENT_BIT) {
-            return "frag";
-        }
-        return "stage_" + stageFlag;
-    }
-
-    /**
-     * UBO member 反射（Phase C） 注意：不同 LWJGL-spvc 版本 member API 命名可能有差异；这里采用“尽力反射 +
-     * 失败降级”策略。
-     */
     private void reflectUboMembers(long compiler, long resources, List<VkReflectionResult.UboMember> out) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             PointerBuffer pList = stack.mallocPointer(1);
@@ -358,7 +332,6 @@ public final class SpirvReflector {
                     blockName = "UBO";
                 }
 
-                // 关键：先拿 type handle，再用 type_get_num_member_types 拿成员数
                 long typeHandle = Spvc.spvc_compiler_get_type_handle(compiler, baseTypeId);
                 if (typeHandle == 0L) {
                     continue;
@@ -403,7 +376,6 @@ public final class SpirvReflector {
                             size = (int) sz;
                         }
                     } catch (Throwable ignored) {
-                        // size 可未知
                     }
 
                     out.add(new VkReflectionResult.UboMember(
@@ -415,9 +387,6 @@ public final class SpirvReflector {
                 }
             }
         } catch (Throwable t) {
-            if (LOGGER.isLoggable(Level.FINE)) {
-                LOGGER.log(Level.FINE, "[SpirvReflector] reflectUboMembers failed.", t);
-            }
         }
     }
 
@@ -425,7 +394,6 @@ public final class SpirvReflector {
             List<VkReflectionResult.DescriptorBinding> in) {
 
         final class Key {
-
             final int set;
             final int binding;
             final String type;
@@ -523,10 +491,10 @@ public final class SpirvReflector {
         return new VkReflectionResult(
                 vertHash,
                 fragHash,
+                0,
                 Collections.emptyList(),
                 Collections.emptyList(),
                 Collections.emptyList()
         );
     }
-
 }

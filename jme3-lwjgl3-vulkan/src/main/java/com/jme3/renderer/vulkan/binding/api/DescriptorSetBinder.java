@@ -25,4 +25,8 @@ public interface DescriptorSetBinder {
      */
     default void cleanup() {
     }
+    
+    default DescriptorBindResult bindForCompute(DescriptorBindRequest req) {
+        throw new UnsupportedOperationException();
+    }
 }

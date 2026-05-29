@@ -2,6 +2,7 @@ package com.jme3.renderer.vulkan.reflection;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class ParamBindingPlan {
 
@@ -72,15 +73,29 @@ public final class ParamBindingPlan {
         return (set >= 0 && set < 4) ? uboSlots[set] : null;
     }
 
+    // 【新增】：消除热路径 GC 分配的缓存
+    private static final ConcurrentHashMap<String, String> NORM_CACHE = new ConcurrentHashMap<>(256);
+
     public static String normalizeParamName(String n) {
         if (n == null || (n = n.trim()).isEmpty()) {
             return "";
         }
-        if (n.length() > 2 && (n.charAt(0) == 'm' || n.charAt(0) == 'M') && n.charAt(1) == '_') {
-            n = n.substring(2);
-        }
-        return toLowerAscii(n);
+        //将处理过的字符串永久缓存，后续查表为零分配 (Zero-Allocation)
+        return NORM_CACHE.computeIfAbsent(n, key -> {
+            String s = key;
+            if (s.length() > 2 && (s.charAt(0) == 'm' || s.charAt(0) == 'M') && s.charAt(1) == '_') {
+                s = s.substring(2);
+            }
+            char[] arr = s.toCharArray();
+            for (int i = 0; i < arr.length; i++) {
+                if (arr[i] >= 'A' && arr[i] <= 'Z') {
+                    arr[i] = (char) (arr[i] + ('a' - 'A'));
+                }
+            }
+            return new String(arr);
+        });
     }
+    
 
     private static String toLowerAscii(String s) {
         char[] arr = s.toCharArray();

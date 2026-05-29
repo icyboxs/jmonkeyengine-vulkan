@@ -338,4 +338,30 @@ public final class VulkanRuntimeFacade {
     public int getDefaultAnisotropicFilter() {
         return s.defaultAnisotropicFilter;
     }
+    // 补充这些代理方法到原类中
+    public com.jme3.renderer.vulkan.resource.VkBuffer getOrCreateBufferObject(com.jme3.shader.bufferobject.BufferObject bo) {
+        if (s.bufferObjectManager == null) return null;
+        return s.bufferObjectManager.getOrCreate(bo);
+    }
+    public void updateBufferObjectData(com.jme3.shader.bufferobject.BufferObject bo) {
+        if (s.bufferObjectManager != null) s.bufferObjectManager.updateData(bo);
+    }
+    public void deleteBufferObject(com.jme3.shader.bufferobject.BufferObject bo) {
+        if (s.bufferObjectManager != null) s.bufferObjectManager.destroy(bo);
+    }
+    public void writeStorageBufferToSet(long dstSet, int dstBinding, long buffer, long offset, long range) {
+        if (s.descriptors != null) s.descriptors.writeSingleStorageBufferToSet(dstSet, dstBinding, buffer, offset, range);
+    }
+    public void writeStorageImageToSet(long dstSet, int dstBinding, com.jme3.renderer.vulkan.resource.VkTexture tex) {
+        if (s.descriptors != null) s.descriptors.writeSingleStorageImageToSet(dstSet, dstBinding, tex);
+    }
+    public com.jme3.renderer.vulkan.pipeline.VulkanPipeline getOrCreateComputePipeline(com.jme3.renderer.vulkan.pipeline.VkComputePipelineKey key, String compSrc) {
+        return s.pipelineManager.getOrCreateComputePipeline(key, compSrc);
+    }
+    public com.jme3.renderer.vulkan.reflection.PipelineDescriptorBindingPlan getComputeBindingPlan(com.jme3.renderer.vulkan.pipeline.VkComputePipelineKey key) {
+        return s.pipelineManager.getComputeBindingPlan(key);
+    }
+    public com.jme3.renderer.vulkan.resource.VkUboLayout getPipelineUboLayoutForCompute(com.jme3.renderer.vulkan.pipeline.VkComputePipelineKey key) {
+        return s.pipelineManager.getComputeUboLayout(key);
+    }
 }

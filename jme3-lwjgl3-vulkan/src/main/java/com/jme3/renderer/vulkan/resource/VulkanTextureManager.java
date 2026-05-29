@@ -18,7 +18,6 @@ public final class VulkanTextureManager {
     private final Map<Texture, VkTexture> textureCache = new WeakHashMap<>();
     private VkTexture whiteTex;
 
-    // 优化：复用转换缓冲，避免频繁分配 DirectByteBuffer
     private ByteBuffer convertBuffer;
 
     public VulkanTextureManager(VkResourceFactory rf, VkTexture whiteTex,
@@ -32,8 +31,6 @@ public final class VulkanTextureManager {
         this.whiteTex = whiteTex;
         this.deferredReleaseQueue = deferredReleaseQueue;
         this.frameIndexSupplier = frameIndexSupplier;
-
-        // 补充缺失的这一行：
         this.linearizeSrgbSupplier = linearizeSrgbSupplier;
     }
 
@@ -67,43 +64,63 @@ public final class VulkanTextureManager {
         }
 
         ByteBuffer data = img.getData(0);
-        if (data == null) {
-            return whiteTex;
-        }
 
         boolean isSrgb = linearizeSrgbSupplier.getAsBoolean()
                 && img.getColorSpace() == com.jme3.texture.image.ColorSpace.sRGB;
 
+        // ========================================================
+        // 【核心封印解除】：彻底移除对 isStorage 和 TextureImage 的严格校验！
+        // 只要前端需要一张没数据的贴图，我们都在 GPU 端直接开辟一块支持 STORAGE_BIT 的空白显存，
+        // 让 Compute Shader 可以尽情挥洒！
+        // ========================================================
+        if (data == null) {
+            int defaultFormat = isSrgb ? org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_SRGB : org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_UNORM;
+            Image.Format fmt = img.getFormat();
+            if (fmt == Image.Format.Luminance8) {
+                defaultFormat = org.lwjgl.vulkan.VK10.VK_FORMAT_R8_UNORM;
+            } else if (fmt == Image.Format.RGBA16F) {
+                defaultFormat = org.lwjgl.vulkan.VK10.VK_FORMAT_R16G16B16A16_SFLOAT;
+            } else if (fmt == Image.Format.RGBA32F) {
+                defaultFormat = org.lwjgl.vulkan.VK10.VK_FORMAT_R32G32B32A32_SFLOAT;
+            } else if (fmt == Image.Format.Luminance16F) {
+                defaultFormat = org.lwjgl.vulkan.VK10.VK_FORMAT_R16_SFLOAT;
+            } else if (fmt == Image.Format.Luminance32F) {
+                defaultFormat = org.lwjgl.vulkan.VK10.VK_FORMAT_R32_SFLOAT;
+            }
+
+            VkTexture vkTex = rf.createEmptyTexture2D(w, h, defaultFormat);
+            textureCache.put(tex, vkTex);
+            return vkTex;
+        }
+
         int vkFormat;
         ByteBuffer pixels;
-        // --- 核心：处理 jME3 到 Vulkan 的格式映射与转换 ---
         Image.Format fmt = img.getFormat();
         switch (fmt) {
             case RGBA8:
-                vkFormat = isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+                vkFormat = isSrgb ? org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_SRGB : org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_UNORM;
                 pixels = data.duplicate();
                 pixels.position(0).limit(w * h * 4);
                 break;
             case ABGR8:
-                // 放弃存在兼容性问题的硬件 Swizzle，改用可靠的 CPU 内存转换
-                vkFormat = isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-                pixels = convertABGR8ToRGBA8(data, w * h); 
+                vkFormat = isSrgb ? org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_SRGB : org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_UNORM;
+                pixels = convertABGR8ToRGBA8(data, w * h);
                 break;
             case RGB8:
-                vkFormat = isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+                vkFormat = isSrgb ? org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_SRGB : org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_UNORM;
                 pixels = convert24BitToRGBA8(data, w * h, false);
                 break;
             case BGR8:
-                vkFormat = isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+                vkFormat = isSrgb ? org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_SRGB : org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_UNORM;
                 pixels = convert24BitToRGBA8(data, w * h, true);
                 break;
             case Luminance8:
-                vkFormat = isSrgb ? VK_FORMAT_R8_SRGB : VK_FORMAT_R8_UNORM;
+                vkFormat = isSrgb ? org.lwjgl.vulkan.VK10.VK_FORMAT_R8_SRGB : org.lwjgl.vulkan.VK10.VK_FORMAT_R8_UNORM;
                 pixels = data.duplicate();
                 pixels.position(0).limit(w * h);
                 break;
             case Luminance8Alpha8:
-                vkFormat = isSrgb ? VK_FORMAT_R8G8_SRGB : VK_FORMAT_R8G8_UNORM;
+                vkFormat = isSrgb ? org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8_SRGB : org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8_UNORM;
                 pixels = data.duplicate();
                 pixels.position(0).limit(w * h * 2);
                 break;
@@ -116,63 +133,44 @@ public final class VulkanTextureManager {
         return vkTex;
     }
 
-    // =======================================================
-    // 转换算法块
-    // =======================================================
-    /**
-     * 将 ABGR (A,B,G,R) 转换为 RGBA (R,G,B,A)
-     */
     private ByteBuffer convertABGR8ToRGBA8(ByteBuffer src, int pixelCount) {
         ByteBuffer dst = getConvertBuffer(pixelCount * 4);
         dst.clear();
-
-        // 显式设置 position 防止 duplicate 后的状态异常
         ByteBuffer s = src.duplicate();
         s.position(0);
-
-        // 逐字节读取和写入，彻底规避 Little-Endian 导致的位运算错位问题
         for (int i = 0; i < pixelCount; i++) {
-            byte a = s.get(); // 原始 Byte 0 (A)
-            byte b = s.get(); // 原始 Byte 1 (B)
-            byte g = s.get(); // 原始 Byte 2 (G)
-            byte r = s.get(); // 原始 Byte 3 (R)
-
-            // 转换为 Vulkan 期望的 R8G8B8A8 顺序
+            byte a = s.get();
+            byte b = s.get();
+            byte g = s.get();
+            byte r = s.get();
             dst.put(r);
             dst.put(g);
             dst.put(b);
             dst.put(a);
         }
-
         dst.position(0).limit(pixelCount * 4);
         return dst;
     }
 
-    /**
-     * 将 24bit (RGB 或 BGR) 转换为 32bit RGBA
-     */
     private ByteBuffer convert24BitToRGBA8(ByteBuffer src, int pixelCount, boolean swapRB) {
         ByteBuffer dst = getConvertBuffer(pixelCount * 4);
         dst.clear();
-
         ByteBuffer s = src.duplicate();
         s.position(0);
-
         for (int i = 0; i < pixelCount; i++) {
-            byte b1 = s.get(); // R (if RGB) or B (if BGR)
-            byte b2 = s.get(); // G
-            byte b3 = s.get(); // B (if RGB) or R (if BGR)
-
+            byte b1 = s.get();
+            byte b2 = s.get();
+            byte b3 = s.get();
             if (swapRB) {
-                dst.put(b3); // R
-                dst.put(b2); // G
-                dst.put(b1); // B
+                dst.put(b3);
+                dst.put(b2);
+                dst.put(b1);
             } else {
-                dst.put(b1); // R
-                dst.put(b2); // G
-                dst.put(b3); // B
+                dst.put(b1);
+                dst.put(b2);
+                dst.put(b3);
             }
-            dst.put((byte) 0xFF); // Alpha = 255
+            dst.put((byte) 0xFF);
         }
         dst.flip();
         return dst;

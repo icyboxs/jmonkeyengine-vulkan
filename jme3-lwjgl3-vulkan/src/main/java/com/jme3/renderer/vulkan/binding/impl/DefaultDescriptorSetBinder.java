@@ -9,6 +9,7 @@ import com.jme3.renderer.vulkan.binding.cache.FrameSetCache;
 import com.jme3.renderer.vulkan.binding.plan.FrequencyLayerRegistry;
 import com.jme3.renderer.vulkan.binding.plan.LayeredBindingPlan;
 import com.jme3.renderer.vulkan.binding.provider.PlanDrivenSetResolver;
+import com.jme3.renderer.vulkan.cmd.ComputeCmd;
 import com.jme3.renderer.vulkan.cmd.DrawCmd;
 import com.jme3.renderer.vulkan.pipeline.VulkanPipeline;
 import com.jme3.renderer.vulkan.reflection.BindingPlanEntry;
@@ -16,31 +17,17 @@ import com.jme3.renderer.vulkan.reflection.PipelineDescriptorBindingPlan;
 import com.jme3.renderer.vulkan.reflection.SetBindingPlan;
 
 import java.util.ArrayList;
-import java.util.logging.Logger;
 
-/**
- * DefaultDescriptorSetBinder
- *
- * 设计目标： - 主链路仅使用 PipelineDescriptorBindingPlan（反射计划）驱动。 
- * 
- * @author icyboxs
- */
 public final class DefaultDescriptorSetBinder implements DescriptorSetBinder {
 
-    private static final Logger LOGGER = Logger.getLogger(DefaultDescriptorSetBinder.class.getName());
-
     private final VulkanRuntime runtime;
-    @SuppressWarnings("unused")
     private final FrequencyLayerRegistry registry;
-    @SuppressWarnings("unused")
     private final FrameSetCache frameSetCache;
-    @SuppressWarnings("unused")
     private final LayeredBindingPlan plan;
-    private final HighFrequencySetProvider highProvider; // 可空；仅生命周期透传
+    private final HighFrequencySetProvider highProvider;
 
     private final PlanDrivenSetResolver planDrivenResolver;
 
-    // 兼容旧统计字段（可后续统一替换）
     private long statSet1Bound;
     private long statSet1CacheHit;
     private long statSet1Alloc;
@@ -75,71 +62,70 @@ public final class DefaultDescriptorSetBinder implements DescriptorSetBinder {
 
     @Override
     public DescriptorBindResult bindForDraw(DescriptorBindRequest req) {
-        if (req == null) {
-            throw new IllegalArgumentException("req is null");
-        }
+        if (req == null) throw new IllegalArgumentException("req is null");
 
         VulkanPipeline pipeline = req.pipeline;
         DrawCmd dc = req.drawCmd;
 
-        if (pipeline == null) {
-            throw new IllegalArgumentException("req.pipeline is null");
-        }
-        if (dc == null) {
-            throw new IllegalArgumentException("req.drawCmd is null");
-        }
+        if (pipeline == null || dc == null) throw new IllegalArgumentException("req missing pipeline/drawCmd");
 
         int setCount = pipeline.getDescriptorSetLayoutCount();
-        if (setCount <= 0) {
-            throw new IllegalStateException("pipeline setCount <= 0");
-        }
+        if (setCount <= 0) throw new IllegalStateException("pipeline setCount <= 0");
 
         PipelineDescriptorBindingPlan bindingPlan = runtime.getPipelineBindingPlan(dc.pipelineKey);
         if (bindingPlan == null || bindingPlan.sets == null || bindingPlan.sets.isEmpty()) {
             throw new IllegalStateException("No reflection binding plan for pipeline: " + dc.pipelineKey);
         }
 
+        return processBindingPlan(req, pipeline, setCount, bindingPlan);
+    }
+    
+    @Override
+    public DescriptorBindResult bindForCompute(DescriptorBindRequest req) {
+        if (req == null) throw new IllegalArgumentException("req is null");
+
+        VulkanPipeline pipeline = req.pipeline;
+        ComputeCmd cc = req.computeCmd;
+
+        if (pipeline == null || cc == null) throw new IllegalArgumentException("req missing pipeline/computeCmd");
+
+        int setCount = pipeline.getDescriptorSetLayoutCount();
+        if (setCount <= 0) return new DescriptorBindResult(0, new long[0], new int[0]);
+
+        PipelineDescriptorBindingPlan bindingPlan = runtime.getComputeBindingPlan(cc.pipelineKey);
+        if (bindingPlan == null || bindingPlan.sets == null || bindingPlan.sets.isEmpty()) {
+            return new DescriptorBindResult(0, new long[0], new int[0]);
+        }
+
+        return processBindingPlan(req, pipeline, setCount, bindingPlan);
+    }
+
+    private DescriptorBindResult processBindingPlan(DescriptorBindRequest req, VulkanPipeline pipeline, int setCount, PipelineDescriptorBindingPlan bindingPlan) {
         ArrayList<Integer> setIndices = new ArrayList<>();
         ArrayList<Long> setHandles = new ArrayList<>();
         ArrayList<Integer> dynamicOffsets = new ArrayList<>();
         ArrayList<Integer> dynamicOffsetSetIndices = new ArrayList<>();
 
         for (SetBindingPlan setPlan : bindingPlan.sets) {
-            if (setPlan == null) {
-                continue;
-            }
-
+            if (setPlan == null) continue;
             int setIndex = setPlan.setIndex;
-            if (setIndex < 0 || setIndex >= setCount) {
-                throw new IllegalStateException(
-                        "Reflected set out of pipeline range: set=" + setIndex + ", setCount=" + setCount
-                );
-            }
+            if (setIndex < 0 || setIndex >= setCount) continue;
 
             long setLayout = pipeline.getDescriptorSetLayoutAt(setIndex);
-            if (setLayout == 0L) {
-                throw new IllegalStateException("DescriptorSetLayout is 0 for reflected set=" + setIndex);
-            }
+            if (setLayout == 0L) continue;
 
-            long setHandle = resolveSetByPlan(req, pipeline, setPlan);
-            if (setHandle == 0L) {
-                throw new IllegalStateException("Failed to resolve descriptor set for set=" + setIndex);
-            }
+            long setHandle = planDrivenResolver.resolveAndWriteSet(req, setPlan, setLayout);
+            if (setHandle == 0L) throw new IllegalStateException("Failed to resolve descriptor set for set=" + setIndex);
 
             setIndices.add(setIndex);
             setHandles.add(setHandle);
 
-            // 动态偏移：按 setPlan 中 dynamic binding 的数量收集
             for (BindingPlanEntry e : setPlan.bindings) {
                 if (e != null && e.dynamic) {
                     dynamicOffsets.add(req.dynamicOffset);
                     dynamicOffsetSetIndices.add(setIndex);
                 }
             }
-        }
-
-        if (setHandles.isEmpty()) {
-            throw new IllegalStateException("No descriptor sets resolved for pipeline");
         }
 
         return DescriptorBindResult.ofSparse(
@@ -150,24 +136,9 @@ public final class DefaultDescriptorSetBinder implements DescriptorSetBinder {
         );
     }
 
-    private long resolveSetByPlan(DescriptorBindRequest req,
-            VulkanPipeline pipeline,
-            SetBindingPlan setPlan) {
-        if (setPlan == null) {
-            return 0L;
-        }
-
-        long setLayout = pipeline.getDescriptorSetLayoutAt(setPlan.setIndex);
-        if (setLayout == 0L) {
-            return 0L;
-        }
-
-        return planDrivenResolver.resolveAndWriteSet(req, setPlan, setLayout);
-    }
-
     @Override
     public void beginFrame(int frameIndex) {
-        planDrivenResolver.beginFrame(frameIndex); // 新增
+        planDrivenResolver.beginFrame(frameIndex);
         if (highProvider != null) {
             highProvider.beginFrame(frameIndex);
         }
@@ -175,36 +146,19 @@ public final class DefaultDescriptorSetBinder implements DescriptorSetBinder {
 
     @Override
     public void cleanup() {
-        planDrivenResolver.cleanup(); // 新增
+        planDrivenResolver.cleanup();
         frameSetCache.clearAll();
         if (highProvider != null) {
             highProvider.cleanup();
         }
     }
 
-    public long getStatSet1Bound() {
-        return statSet1Bound;
-    }
-
-    public long getStatSet1CacheHit() {
-        return statSet1CacheHit;
-    }
-
-    public long getStatSet1Alloc() {
-        return statSet1Alloc;
-    }
-
-    public long getStatHighBound() {
-        return statHighBound;
-    }
-
-    public long getStatHighHit() {
-        return statHighHit;
-    }
-
-    public long getStatHighAlloc() {
-        return statHighAlloc;
-    }
+    public long getStatSet1Bound() { return statSet1Bound; }
+    public long getStatSet1CacheHit() { return statSet1CacheHit; }
+    public long getStatSet1Alloc() { return statSet1Alloc; }
+    public long getStatHighBound() { return statHighBound; }
+    public long getStatHighHit() { return statHighHit; }
+    public long getStatHighAlloc() { return statHighAlloc; }
 
     private static int[] toIntArray(java.util.List<Integer> list) {
         int[] arr = new int[list.size()];

@@ -147,6 +147,15 @@ public final class VulkanRuntimeLifecycle {
                 s.deferredReleaseQueue,
                 owner::getCurrentFrameSlot
         );
+        
+        // ===============================================
+        // 实例化 SSBO 显存管理器
+        // ===============================================
+        s.bufferObjectManager = new VulkanBufferObjectManager(
+                s.rf,
+                s.deferredReleaseQueue,
+                owner::getCurrentFrameSlot
+        );
     }
 
     private void initDescriptorsAndMaterials() {
@@ -235,6 +244,10 @@ public final class VulkanRuntimeLifecycle {
         if (s.frameBufferManager != null) {
             s.frameBufferManager.destroyAll();
             s.frameBufferManager = null;
+        }
+        if (s.bufferObjectManager != null) {
+            s.bufferObjectManager.destroyAll();
+            s.bufferObjectManager = null;
         }
     }
 

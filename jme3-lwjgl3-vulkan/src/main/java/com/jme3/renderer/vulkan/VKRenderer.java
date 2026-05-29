@@ -426,17 +426,15 @@ public final class VKRenderer implements Renderer, VkCommandRecorder {
             LOGGER.log(Level.WARNING, "Failed to delete FrameBuffer", t);
         }
     }
-    
-    
-
-
 
     @Override
+    @Deprecated
     public void popDebugGroup() {
         //Vulkan 原生支持 vkCmdBeginDebugUtilsLabelEXT，但性价比极低。现代 Vulkan 开发严重依赖 RenderDoc / Nsight 等外部工具，引擎层的标签打点可以省略。保持为空
     }
 
     @Override
+    @Deprecated
     public void pushDebugGroup(String name) {
         //Vulkan 原生支持 vkCmdBeginDebugUtilsLabelEXT，但性价比极低。现代 Vulkan 开发严重依赖 RenderDoc / Nsight 等外部工具，引擎层的标签打点可以省略。保持为空
     }
@@ -527,38 +525,47 @@ public final class VKRenderer implements Renderer, VkCommandRecorder {
     }
 
     @Override
-    @Deprecated
     public void setTextureImage(int unit, TextureImage tex) throws TextureUnitException {
-        //Compute Shader 图像读写。当前渲染器架构专注图形管线（Graphics Pipeline），尚未实现 Compute Shader 的 Image Load/Store 功能。保持为空。
+        stateTracker.setTextureImage(unit, tex);
     }
 
     @Override
-    @Deprecated
     public void updateShaderStorageBufferObjectData(com.jme3.shader.bufferobject.BufferObject bo) {
-    
+        if (bo != null) {
+            runtime.updateBufferObjectData(bo);
+        }
+    }
+
+    @Override
+    public void setShaderStorageBufferObject(int bindingPoint, com.jme3.shader.bufferobject.BufferObject bufferObject) {
+        stateTracker.setShaderStorageBufferObject(bindingPoint, bufferObject);
     }
 
     @Override
     @Deprecated
     public void updateUniformBufferObjectData(com.jme3.shader.bufferobject.BufferObject bo) {
-        //直接的 UBO/SSBO 绑定。在这套架构中，UBO 的数据（如 WVP、材质参数）是由 DrawCmdBuilder 从 Shader 和 Material 中提取并写入 dc.uboData，然后通过高频提供者动态写入的。不需要按 OpenGL 的方式单独绑定这些对象。保持为空。
-    }
-
-    @Override
-    @Deprecated
-    public void setShaderStorageBufferObject(int bindingPoint, com.jme3.shader.bufferobject.BufferObject bufferObject) {
-        //直接的 UBO/SSBO 绑定。在这套架构中，UBO 的数据（如 WVP、材质参数）是由 DrawCmdBuilder 从 Shader 和 Material 中提取并写入 dc.uboData，然后通过高频提供者动态写入的。不需要按 OpenGL 的方式单独绑定这些对象。保持为空。
     }
 
     @Override
     @Deprecated
     public void setUniformBufferObject(int bindingPoint, com.jme3.shader.bufferobject.BufferObject bufferObject) {
-        //直接的 UBO/SSBO 绑定。在这套架构中，UBO 的数据（如 WVP、材质参数）是由 DrawCmdBuilder 从 Shader 和 Material 中提取并写入 dc.uboData，然后通过高频提供者动态写入的。不需要按 OpenGL 的方式单独绑定这些对象。保持为空。
     }
 
     @Override
-    @Deprecated
     public void deleteBuffer(BufferObject bo) {
-    //Vulkan 架构中，UBO 的数据流向已经被彻底重构，走的是全动态、数据驱动的高性能路径，完美绕过了 jME3 原生的 BufferObject
+        if (bo != null) {
+            runtime.deleteBufferObject(bo);
+        }
+    }
+    
+    public void dispatchCompute(int numGroupsX, int numGroupsY, int numGroupsZ) {
+        if (drawQueue.isFull() || drawCmdBuilder == null) {
+            return;
+        }
+        com.jme3.renderer.vulkan.cmd.RendererStateSnapshot snap = stateTracker.createSnapshot();
+        com.jme3.renderer.vulkan.cmd.ComputeCmd cmd = drawCmdBuilder.buildCompute(numGroupsX, numGroupsY, numGroupsZ, snap);
+        if (cmd != null) {
+            drawQueue.enqueueCompute(cmd);
+        }
     }
 }

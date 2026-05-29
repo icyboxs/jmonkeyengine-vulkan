@@ -1,60 +1,51 @@
 package com.jme3.renderer.vulkan.resource;
 
 import com.jme3.renderer.vulkan.frame.VulkanFrameDriver;
-
-import java.util.ArrayList;
-import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
  * 按 frame slot 延迟执行资源销毁任务。
- * 策略：当前帧 push 到当前桶；每帧开始 flush “下一圈将被复用的桶”。
+ * 【修复】：使用 ConcurrentLinkedQueue 保证跨线程投递与消费的安全。
  */
 public final class VulkanDeferredReleaseQueue {
 
-    private final List<Runnable>[] buckets;
+    private final ConcurrentLinkedQueue<Runnable>[] buckets;
 
     @SuppressWarnings("unchecked")
     public VulkanDeferredReleaseQueue() {
         int n = VulkanFrameDriver.MAX_FRAMES_IN_FLIGHT;
-        buckets = (List<Runnable>[]) new List<?>[n];
+        buckets = new ConcurrentLinkedQueue[n];
         for (int i = 0; i < n; i++) {
-            buckets[i] = new ArrayList<>();
+            buckets[i] = new ConcurrentLinkedQueue<>();
         }
     }
 
     public void enqueue(int frameIndex, Runnable r) {
         if (r == null) return;
         int idx = normalize(frameIndex);
-        buckets[idx].add(r);
+        buckets[idx].offer(r); // 【修复】：无锁入队
     }
 
-    /**
-     * 在 frameIndex 帧开始时调用，回收“即将被本帧复用”的桶。
-     * 前提：FrameDriver 已经等待过该 frame slot 的 fence。
-     */
     public void flushForFrame(int frameIndex) {
         int idx = normalize(frameIndex);
-        List<Runnable> list = buckets[idx];
-        if (list.isEmpty()) return;
-
-        for (int i = 0; i < list.size(); i++) {
+        ConcurrentLinkedQueue<Runnable> queue = buckets[idx];
+        
+        Runnable r;
+        // 【修复】：安全出队并执行，不怕边遍历边有新任务进来
+        while ((r = queue.poll()) != null) {
             try {
-                list.get(i).run();
+                r.run();
             } catch (Throwable ignored) {
             }
         }
-        list.clear();
     }
 
     public void flushAll() {
-        for (List<Runnable> list : buckets) {
-            for (Runnable r : list) {
-                try {
-                    r.run();
-                } catch (Throwable ignored) {
-                }
+        for (ConcurrentLinkedQueue<Runnable> queue : buckets) {
+            Runnable r;
+            while ((r = queue.poll()) != null) {
+                try { r.run(); } catch (Throwable ignored) {}
             }
-            list.clear();
         }
     }
 

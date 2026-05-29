@@ -85,7 +85,7 @@ public final class VulkanMeshManager {
 
         // 利用 Factory 内置的全局 Batch 异步拷贝
         rf.copyBuffer(stagingBuffer, deviceBuffer, sizeBytes);
-        
+
         // 托管给 Factory 随队列提交时一并释放
         rf.destroyStagingBuffer(stagingBuffer);
 
@@ -94,6 +94,7 @@ public final class VulkanMeshManager {
 
     // 辅助数据结构：持有转换后数据的包装
     private static class ConvertedData {
+
         Buffer data;
         int bytes;
         boolean needsFree;
@@ -105,14 +106,18 @@ public final class VulkanMeshManager {
             if (type == VertexBuffer.Type.Color && vertexCount > 0) {
                 out.bytes = vertexCount * 4 * 4;
                 ByteBuffer colBB = memAlloc(out.bytes);
-                for (int i = 0; i < vertexCount * 4; i++) colBB.putFloat(1.0f);
+                for (int i = 0; i < vertexCount * 4; i++) {
+                    colBB.putFloat(1.0f);
+                }
                 colBB.flip();
                 out.data = colBB;
                 out.needsFree = true;
             } else if (type == VertexBuffer.Type.TexCoord && vertexCount > 0) {
                 out.bytes = vertexCount * 2 * 4;
                 ByteBuffer uvBB = memAlloc(out.bytes);
-                for (int i = 0; i < vertexCount * 2; i++) uvBB.putFloat(0.0f);
+                for (int i = 0; i < vertexCount * 2; i++) {
+                    uvBB.putFloat(0.0f);
+                }
                 uvBB.flip();
                 out.data = uvBB;
                 out.needsFree = true;
@@ -163,7 +168,9 @@ public final class VulkanMeshManager {
                     throw new UnsupportedOperationException("Unsupported format for " + type + ": " + vb.getFormat());
                 }
             } else {
-                for (int i = 0; i < elements * components; i++) floatData.putFloat(0.0f);
+                for (int i = 0; i < elements * components; i++) {
+                    floatData.putFloat(0.0f);
+                }
             }
             floatData.flip();
             out.data = floatData;
@@ -196,7 +203,9 @@ public final class VulkanMeshManager {
                 if (cd.data != null) {
                     VkBuffer vbo = createOptimalBuffer(vb, cd.data, cd.bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
                     gpu.vbos.put(type, vbo);
-                    if (cd.needsFree) memFree((ByteBuffer) cd.data);
+                    if (cd.needsFree) {
+                        memFree((ByteBuffer) cd.data);
+                    }
                 }
             }
 
@@ -211,9 +220,13 @@ public final class VulkanMeshManager {
                     int indexBytes = indexCount * bytesPerIndex;
 
                     Buffer src = ib.getBuffer();
-                    if (src instanceof ByteBuffer) src = ((ByteBuffer) src).duplicate();
-                    else if (src instanceof ShortBuffer) src = ((ShortBuffer) src).duplicate();
-                    else if (src instanceof IntBuffer) src = ((IntBuffer) src).duplicate();
+                    if (src instanceof ByteBuffer) {
+                        src = ((ByteBuffer) src).duplicate();
+                    } else if (src instanceof ShortBuffer) {
+                        src = ((ShortBuffer) src).duplicate();
+                    } else if (src instanceof IntBuffer) {
+                        src = ((IntBuffer) src).duplicate();
+                    }
 
                     if (src != null) {
                         src.clear();
@@ -238,12 +251,16 @@ public final class VulkanMeshManager {
      */
     public boolean updateBufferDataFast(Mesh mesh, VertexBuffer vb) {
         VkMeshGpu gpu = meshCache.get(mesh);
-        if (gpu == null) return false;
+        if (gpu == null) {
+            return false;
+        }
 
         boolean isIndex = (vb.getBufferType() == VertexBuffer.Type.Index);
         VkBuffer vbo = isIndex ? gpu.ibo : gpu.vbos.get(vb.getBufferType());
 
-        if (vbo == null) return false;
+        if (vbo == null) {
+            return false;
+        }
 
         int bytes;
         Buffer finalData = null;
@@ -251,46 +268,76 @@ public final class VulkanMeshManager {
 
         if (isIndex) {
             IndexBuffer ib = mesh.getIndexBuffer();
-            if (ib == null || ib.getBuffer() == null) return false;
+            if (ib == null || ib.getBuffer() == null) {
+                return false;
+            }
             int bytesPerIndex = (ib.getFormat() == VertexBuffer.Format.UnsignedShort) ? 2 : 4;
             bytes = ib.size() * bytesPerIndex;
-            
+
             Buffer src = ib.getBuffer();
-            if (src instanceof ByteBuffer) finalData = ((ByteBuffer) src).duplicate();
-            else if (src instanceof ShortBuffer) finalData = ((ShortBuffer) src).duplicate();
-            else if (src instanceof IntBuffer) finalData = ((IntBuffer) src).duplicate();
-            if (finalData != null) finalData.clear();
+            if (src instanceof ByteBuffer) {
+                finalData = ((ByteBuffer) src).duplicate();
+            } else if (src instanceof ShortBuffer) {
+                finalData = ((ShortBuffer) src).duplicate();
+            } else if (src instanceof IntBuffer) {
+                finalData = ((IntBuffer) src).duplicate();
+            }
+            if (finalData != null) {
+                finalData.clear();
+            }
         } else {
             ConvertedData cd = convertVbData(vb, vb.getBufferType(), mesh.getVertexCount());
-            if (cd.data == null) return false;
+            if (cd.data == null) {
+                return false;
+            }
             bytes = cd.bytes;
             finalData = cd.data;
             needFree = cd.needsFree;
         }
 
-        if (finalData == null) return false;
+        if (finalData == null) {
+            return false;
+        }
 
-        // 【关键判定】：如果该 Buffer 原本分配在 CPU 可见内存区，且数据没超出现有容量，直接 MemCopy 覆写，绝不销毁！
-        if (vbo.isHostVisible && bytes <= vbo.capacity) {
-            rf.writeToMemory(vbo.memory, finalData, bytes);
-            if (needFree) memFree((ByteBuffer) finalData);
+        // 【核心修复】：Buffer Orphaning (孤儿化)
+        // 绝对不要直接覆写 vbo.memory，这会导致 GPU 读到撕裂数据甚至 Device Lost。
+        // 我们将旧 Buffer 投递到延迟销毁队列（等 MAX_FRAMES_IN_FLIGHT 后安全销毁），并开辟新 Buffer
+        if (vbo.isHostVisible) {
+            deferDestroyBuffer(vbo);
+
+            int usage = isIndex ? VK_BUFFER_USAGE_INDEX_BUFFER_BIT : VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+            VkBuffer newVbo = createOptimalBuffer(vb, finalData, bytes, usage);
+
             if (isIndex) {
+                gpu.ibo = newVbo;
                 gpu.indexCount = mesh.getIndexBuffer().size();
-            } else if (vb.getBufferType() == VertexBuffer.Type.Position) {
-                gpu.vertexCount = vb.getNumElements();
+            } else {
+                gpu.vbos.put(vb.getBufferType(), newVbo);
+                if (vb.getBufferType() == VertexBuffer.Type.Position) {
+                    gpu.vertexCount = vb.getNumElements();
+                }
+            }
+            if (needFree) {
+                memFree((ByteBuffer) finalData);
             }
             return true;
         }
 
-        if (needFree) memFree((ByteBuffer) finalData);
+        if (needFree) {
+            memFree((ByteBuffer) finalData);
+        }
         return false;
     }
 
     // 提供给上层的智能判定入口
     public void updateOrDestroyByVertexBuffer(VertexBuffer vb) {
-        if (vb == null) return;
+        if (vb == null) {
+            return;
+        }
         java.util.Set<Mesh> meshes = vbToMeshes.get(vb);
-        if (meshes == null || meshes.isEmpty()) return;
+        if (meshes == null || meshes.isEmpty()) {
+            return;
+        }
 
         java.util.ArrayList<Mesh> affected = new java.util.ArrayList<>(meshes);
         for (Mesh m : affected) {
@@ -325,41 +372,67 @@ public final class VulkanMeshManager {
 
     public void destroyAll() {
         for (VkMeshGpu gpu : meshCache.values()) {
-            if (gpu == null) continue;
-            for (VkBuffer b : gpu.vbos.values()) deferDestroyBuffer(b);
-            if (gpu.ibo != null) deferDestroyBuffer(gpu.ibo);
+            if (gpu == null) {
+                continue;
+            }
+            for (VkBuffer b : gpu.vbos.values()) {
+                deferDestroyBuffer(b);
+            }
+            if (gpu.ibo != null) {
+                deferDestroyBuffer(gpu.ibo);
+            }
         }
         meshCache.clear();
         vbToMeshes.clear();
     }
 
     private static Buffer dupAndClear(Buffer src) {
-        if (src == null) return null;
-        if (src instanceof ByteBuffer) return ((ByteBuffer) src).duplicate().clear();
-        if (src instanceof java.nio.FloatBuffer) return ((java.nio.FloatBuffer) src).duplicate().clear();
-        if (src instanceof java.nio.IntBuffer) return ((java.nio.IntBuffer) src).duplicate().clear();
-        if (src instanceof java.nio.ShortBuffer) return ((java.nio.ShortBuffer) src).duplicate().clear();
-        if (src instanceof java.nio.LongBuffer) return ((java.nio.LongBuffer) src).duplicate().clear();
+        if (src == null) {
+            return null;
+        }
+        if (src instanceof ByteBuffer) {
+            return ((ByteBuffer) src).duplicate().clear();
+        }
+        if (src instanceof java.nio.FloatBuffer) {
+            return ((java.nio.FloatBuffer) src).duplicate().clear();
+        }
+        if (src instanceof java.nio.IntBuffer) {
+            return ((java.nio.IntBuffer) src).duplicate().clear();
+        }
+        if (src instanceof java.nio.ShortBuffer) {
+            return ((java.nio.ShortBuffer) src).duplicate().clear();
+        }
+        if (src instanceof java.nio.LongBuffer) {
+            return ((java.nio.LongBuffer) src).duplicate().clear();
+        }
         throw new UnsupportedOperationException("Unsupported Buffer type: " + src.getClass());
     }
 
     private void indexMeshVertexBuffers(Mesh mesh) {
-        if (mesh == null) return;
+        if (mesh == null) {
+            return;
+        }
         removeMeshFromReverseIndex(mesh);
         for (VertexBuffer vb : mesh.getBufferList().getArray()) {
-            if (vb == null) continue;
+            if (vb == null) {
+                continue;
+            }
             vbToMeshes.computeIfAbsent(vb, k -> java.util.Collections.newSetFromMap(new IdentityHashMap<>())).add(mesh);
         }
     }
 
     private void removeMeshFromReverseIndex(Mesh mesh) {
-        if (mesh == null) return;
+        if (mesh == null) {
+            return;
+        }
         for (java.util.Iterator<Map.Entry<VertexBuffer, java.util.Set<Mesh>>> it = vbToMeshes.entrySet().iterator(); it.hasNext();) {
             Map.Entry<VertexBuffer, java.util.Set<Mesh>> e = it.next();
             java.util.Set<Mesh> set = e.getValue();
             if (set != null) {
                 set.remove(mesh);
-                if (set.isEmpty()) it.remove();
+                if (set.isEmpty()) {
+                    it.remove();
+                }
             } else {
                 it.remove();
             }
@@ -367,7 +440,9 @@ public final class VulkanMeshManager {
     }
 
     private void deferDestroyBuffer(VkBuffer b) {
-        if (b == null) return;
+        if (b == null) {
+            return;
+        }
         if (deferredReleaseQueue == null || frameIndexSupplier == null) {
             rf.destroyBuffer(b);
             return;

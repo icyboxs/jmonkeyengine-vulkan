@@ -2,6 +2,7 @@ package com.jme3.renderer.vulkan.frame;
 
 import com.jme3.math.ColorRGBA;
 import com.jme3.renderer.vulkan.VkCommandRecorder;
+import com.jme3.renderer.vulkan.cmd.ComputeCmd;
 import com.jme3.renderer.vulkan.cmd.CopyCmd;
 import com.jme3.renderer.vulkan.queue.DrawQueue;
 import com.jme3.renderer.vulkan.state.FrontendStateTracker;
@@ -15,11 +16,6 @@ import static org.lwjgl.vulkan.KHRSwapchain.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 import static org.lwjgl.vulkan.KHRSynchronization2.VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR;
 import static org.lwjgl.vulkan.VK10.*;
 
-/**
- * 统筹一帧画面的录制生命周期。
- *
- * @author icyboxs
- */
 public final class DefaultFrameRecorder implements VkCommandRecorder {
 
     private final FrontendStateTracker stateTracker;
@@ -42,7 +38,6 @@ public final class DefaultFrameRecorder implements VkCommandRecorder {
             int fbW = frame.width;
             int fbH = frame.height;
 
-            // 图像布局转换
             int oldColor = frame.swapchain.getImageLayout(swapchainIndex);
             VkBarrierUtil.transitionSwapchainImage(cmd, frame, swapchainIndex, oldColor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
             frame.swapchain.setImageLayout(swapchainIndex, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -50,6 +45,13 @@ public final class DefaultFrameRecorder implements VkCommandRecorder {
             int oldDepth = frame.swapchain.getDepthLayout();
             VkBarrierUtil.transitionDepthImage(cmd, frame, oldDepth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
             frame.swapchain.setDepthLayout(VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+            drawQueue.precomputeAndSort(frame);
+            
+            java.util.List<ComputeCmd> computes = drawQueue.getComputeCommands();
+            if (computes != null && !computes.isEmpty()) {
+                drawExecutor.executeComputeList(cmd, stack, frameIndex, frame, computes);
+            }
 
             ColorRGBA background = stateTracker.getBackground();
             VkClearValue.Buffer clearValues = VkClearValue.calloc(2, stack);
@@ -76,107 +78,73 @@ public final class DefaultFrameRecorder implements VkCommandRecorder {
             ri.renderArea().offset().set(0, 0);
             ri.renderArea().extent().set(frame.width, frame.height);
 
-            // 排序并开启渲染通道
-            drawQueue.precomputeAndSort(frame);
             vkCmdBeginRenderingKHR(cmd, ri);
-
-            //在同一个 RenderPass 中，先画 Opaque，再画 GUI
             drawExecutor.executeList(cmd, stack, frameIndex, frame, drawQueue.getOpaqueCommands());
             drawExecutor.executeList(cmd, stack, frameIndex, frame, drawQueue.getGuiCommands());
-
             vkCmdEndRenderingKHR(cmd);
 
-            //在 RenderPass 之外，统一执行所有的 FrameBuffer 拷贝
             executeCopies(cmd, stack, frame, swapchainIndex);
 
-            // 转换到 Present
             VkBarrierUtil.transitionSwapchainImage(cmd, frame, swapchainIndex,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
             frame.swapchain.setImageLayout(swapchainIndex, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
         } finally {
-            drawQueue.clear(); // 保证一帧结束后队列必定清空
+            drawQueue.clear(); 
         }
     }
 
     private void executeCopies(VkCommandBuffer cmd, MemoryStack stack, VulkanFrameInfo frame, int swapchainIndex) {
         java.util.List<CopyCmd> copies = drawQueue.getCopyCommands();
-        if (copies == null || copies.isEmpty()) {
-            return;
-        }
+        if (copies == null || copies.isEmpty()) return;
 
         for (CopyCmd copy : copies) {
-            if (copy.copyColor) {
-                executeSingleCopy(cmd, stack, frame, swapchainIndex, copy.src, copy.dst, true);
-            }
-            if (copy.copyDepth) {
-                executeSingleCopy(cmd, stack, frame, swapchainIndex, copy.src, copy.dst, false);
-            }
+            if (copy.copyColor) executeSingleCopy(cmd, stack, frame, swapchainIndex, copy.src, copy.dst, true);
+            if (copy.copyDepth) executeSingleCopy(cmd, stack, frame, swapchainIndex, copy.src, copy.dst, false);
         }
     }
 
     private void executeSingleCopy(VkCommandBuffer cmd, MemoryStack stack, VulkanFrameInfo frame, int swapchainIndex, FrameBuffer srcFb, FrameBuffer dstFb, boolean isColor) {
-        long srcImage = 0;
-        int srcW = 0, srcH = 0;
-        int srcSamples = 1;
-        long dstImage = 0;
-        int dstW = 0, dstH = 0;
-        int dstSamples = 1;
+        long srcImage = 0; int srcW = 0, srcH = 0; int srcSamples = 1;
+        long dstImage = 0; int dstW = 0, dstH = 0; int dstSamples = 1;
 
         int aspectMask = isColor ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;
 
-        // 1. 解析源 FBO (null 代表主屏幕 Swapchain)
         if (srcFb == null) {
             srcImage = isColor ? frame.swapchain.getImage(swapchainIndex) : frame.swapchain.getDepthImage();
-            srcW = frame.width;
-            srcH = frame.height;
+            srcW = frame.width; srcH = frame.height;
         } else {
             FrameBuffer.RenderBuffer rb = isColor ? srcFb.getColorBuffer() : srcFb.getDepthBuffer();
             if (rb != null && rb.getTexture() != null) {
                 com.jme3.renderer.vulkan.resource.VkTexture vkTex = frame.runtime.getOrCreateVkTexture(rb.getTexture());
-                if (vkTex != null && vkTex.image != 0) {
-                    srcImage = vkTex.image;
-                    srcW = vkTex.width;
-                    srcH = vkTex.height;
-                }
+                if (vkTex != null && vkTex.image != 0) { srcImage = vkTex.image; srcW = vkTex.width; srcH = vkTex.height; }
             }
             srcSamples = srcFb.getSamples() > 1 ? srcFb.getSamples() : 1;
         }
 
-        // 2. 解析目标 FBO (null 代表主屏幕 Swapchain)
         if (dstFb == null) {
             dstImage = isColor ? frame.swapchain.getImage(swapchainIndex) : frame.swapchain.getDepthImage();
-            dstW = frame.width;
-            dstH = frame.height;
+            dstW = frame.width; dstH = frame.height;
         } else {
             FrameBuffer.RenderBuffer rb = isColor ? dstFb.getColorBuffer() : dstFb.getDepthBuffer();
             if (rb != null && rb.getTexture() != null) {
                 com.jme3.renderer.vulkan.resource.VkTexture vkTex = frame.runtime.getOrCreateVkTexture(rb.getTexture());
-                if (vkTex != null && vkTex.image != 0) {
-                    dstImage = vkTex.image;
-                    dstW = vkTex.width;
-                    dstH = vkTex.height;
-                }
+                if (vkTex != null && vkTex.image != 0) { dstImage = vkTex.image; dstW = vkTex.width; dstH = vkTex.height; }
             }
             dstSamples = dstFb.getSamples() > 1 ? dstFb.getSamples() : 1;
         }
 
-        if (srcImage == 0 || dstImage == 0 || srcImage == dstImage) {
-            return;
-        }
+        if (srcImage == 0 || dstImage == 0 || srcImage == dstImage) return;
 
-        // 3. 【强同步屏障】抛弃状态追踪，强行转为安全拷贝状态 (TRANSFER_SRC / DST)
         transitionImageForCopy(cmd, stack, srcImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, aspectMask);
         transitionImageForCopy(cmd, stack, dstImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, aspectMask);
 
-        // 4. 判断并执行: MSAA降采样 (Resolve) 还是 常规分辨率缩放 (Blit)
         if (srcSamples > 1 && dstSamples == 1) {
             VkImageResolve.Buffer resolve = VkImageResolve.calloc(1, stack);
             resolve.srcSubresource().aspectMask(aspectMask).layerCount(1);
             resolve.dstSubresource().aspectMask(aspectMask).layerCount(1);
             resolve.extent().set(Math.min(srcW, dstW), Math.min(srcH, dstH), 1);
-
             vkCmdResolveImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, resolve);
         } else {
             VkImageBlit.Buffer blit = VkImageBlit.calloc(1, stack);
@@ -184,13 +152,10 @@ public final class DefaultFrameRecorder implements VkCommandRecorder {
             blit.srcOffsets(1).set(srcW, srcH, 1);
             blit.dstSubresource().aspectMask(aspectMask).layerCount(1);
             blit.dstOffsets(1).set(dstW, dstH, 1);
-
-            // Vulkan 规定深度缓冲不支持线性插值，必须使用 NEAREST
             int filter = isColor ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
             vkCmdBlitImage(cmd, srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, blit, filter);
         }
 
-        // 5. 将图像恢复为 FBO 需要的读取或写入状态
         int finalSrcLayout = isColor ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         int finalDstLayout = (dstFb == null) ? finalSrcLayout : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -200,19 +165,12 @@ public final class DefaultFrameRecorder implements VkCommandRecorder {
 
     private void transitionImageForCopy(VkCommandBuffer cmd, MemoryStack stack, long image, int oldLayout, int newLayout, int aspectMask) {
         VkImageMemoryBarrier.Buffer barrier = VkImageMemoryBarrier.calloc(1, stack)
-                .sType$Default()
-                .oldLayout(oldLayout)
-                .newLayout(newLayout)
-                .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
-                .dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
+                .sType$Default().oldLayout(oldLayout).newLayout(newLayout)
+                .srcQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED).dstQueueFamilyIndex(VK_QUEUE_FAMILY_IGNORED)
                 .image(image);
-
         barrier.subresourceRange().aspectMask(aspectMask).levelCount(1).layerCount(1);
-
-        // 使用宽泛内存屏障，保证 Blit 的执行绝对安全（防止和上下游 Shader 读写冲突）
         barrier.srcAccessMask(VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT);
         barrier.dstAccessMask(VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT);
-
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, null, null, barrier);
     }
 }

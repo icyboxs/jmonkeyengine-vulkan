@@ -8,6 +8,7 @@ import com.jme3.renderer.vulkan.frame.VulkanFrameDriver;
 import com.jme3.renderer.vulkan.pipeline.PassKey;
 import com.jme3.renderer.vulkan.resource.VkResourceFactory;
 import com.jme3.renderer.vulkan.resource.VkTexture;
+import com.jme3.renderer.vulkan.resource.VulkanBufferObjectManager;
 import com.jme3.renderer.vulkan.resource.VulkanDeferredReleaseQueue;
 import com.jme3.renderer.vulkan.resource.VulkanFrameBufferManager;
 import com.jme3.renderer.vulkan.resource.VulkanFrameDescriptors;
@@ -67,6 +68,7 @@ public final class VulkanRuntimeState {
 
     public volatile int defaultAnisotropicFilter = 1;
     
+    public VulkanBufferObjectManager bufferObjectManager;
     public VulkanRuntimeState(AppSettings settings) {
         this.settings = settings;
         this.vsync = settings.isVSync();

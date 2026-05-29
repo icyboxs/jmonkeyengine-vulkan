@@ -6,16 +6,13 @@ import com.jme3.math.ColorRGBA;
 import com.jme3.math.Matrix4f;
 import com.jme3.renderer.vulkan.cmd.RendererStateSnapshot;
 import com.jme3.shader.Shader;
+import com.jme3.shader.bufferobject.BufferObject;
 import com.jme3.texture.FrameBuffer;
 import com.jme3.texture.Texture;
+import com.jme3.texture.TextureImage;
 
 import java.util.Arrays;
 
-/**
- * 负责收集和缓存来自 jME3 前端 (Renderer 接口) 的状态变更。
- *
- * @author icyboxs
- */
 public final class FrontendStateTracker {
 
     public static final int MAX_TEXTURE_UNITS = 16;
@@ -24,19 +21,18 @@ public final class FrontendStateTracker {
     public static final int UNIT_EXTRA = 2;
 
     private final Texture[] currentTextures = new Texture[MAX_TEXTURE_UNITS];
+    private final BufferObject[] currentSsbos = new BufferObject[16];
+    private final TextureImage[] currentImages = new TextureImage[16];
 
-    // 清屏与背景色
     private final ColorRGBA background = ColorRGBA.Black.clone();
     private boolean clearColor = true;
     private boolean clearDepth = true;
     private boolean clearStencil = false;
 
-    // Viewport & Scissor (ClipRect)
     private int vpX = 0, vpY = 0, vpW = -1, vpH = -1;
     private boolean clipEnabled = false;
     private int clipX = 0, clipY = 0, clipW = 0, clipH = 0;
 
-    // 核心渲染状态
     private Shader currentShader;
     private RenderState currentRenderState;
     private Material currentMaterial;
@@ -44,7 +40,6 @@ public final class FrontendStateTracker {
     private final Matrix4f currentViewProj = new Matrix4f();
 
     private boolean alphaToCoverage = false;
-
     private float depthRangeStart = 0f;
     private float depthRangeEnd = 1f;
 
@@ -81,6 +76,9 @@ public final class FrontendStateTracker {
         clipH = 0;
 
         clearTextureUnits();
+        Arrays.fill(currentSsbos, null);
+        Arrays.fill(currentImages, null);
+
         currentShader = null;
         currentRenderState = null;
         currentMaterial = null;
@@ -90,7 +88,6 @@ public final class FrontendStateTracker {
         depthRangeEnd = 1f;
     }
 
-    // --- State Setters ---
     public void setViewPort(int x, int y, int width, int height) {
         this.vpX = x;
         this.vpY = y;
@@ -163,7 +160,18 @@ public final class FrontendStateTracker {
         }
     }
 
-    // --- State Getters ---
+    public void setShaderStorageBufferObject(int bindingPoint, BufferObject bo) {
+        if (bindingPoint >= 0 && bindingPoint < 16) {
+            currentSsbos[bindingPoint] = bo;
+        }
+    }
+
+    public void setTextureImage(int unit, TextureImage tex) {
+        if (unit >= 0 && unit < 16) {
+            currentImages[unit] = tex;
+        }
+    }
+
     public ColorRGBA getBackground() {
         return background;
     }
@@ -212,22 +220,29 @@ public final class FrontendStateTracker {
         return currentFb;
     }
 
-    /**
-     * 生成当前绘制命令所需的状态快照
-     */
     public RendererStateSnapshot createSnapshot() {
-        return RendererStateSnapshot.of(
-                currentShader,
-                currentRenderState,
-                currentTextures[UNIT_TEX0],
-                currentTextures[UNIT_LIGHT],
-                currentTextures[UNIT_EXTRA],
-                currentMaterial,
-                alphaToCoverage,
-                vpX, vpY, vpW, vpH,
-                clipEnabled, clipX, clipY, clipW, clipH,
-                depthRangeStart, depthRangeEnd
-        );
+        RendererStateSnapshot s = new RendererStateSnapshot();
+        s.shader = currentShader;
+        s.renderState = currentRenderState;
+        s.tex0 = currentTextures[UNIT_TEX0];
+        s.light = currentTextures[UNIT_LIGHT];
+        s.extra = currentTextures[UNIT_EXTRA];
+        s.material = currentMaterial;
+        s.alphaToCoverage = alphaToCoverage;
+        s.vpX = vpX;
+        s.vpY = vpY;
+        s.vpW = vpW;
+        s.vpH = vpH;
+        s.clipEnabled = clipEnabled;
+        s.clipX = clipX;
+        s.clipY = clipY;
+        s.clipW = clipW;
+        s.clipH = clipH;
+        s.depthRangeStart = depthRangeStart;
+        s.depthRangeEnd = depthRangeEnd;
 
+        System.arraycopy(currentSsbos, 0, s.ssbos, 0, 16);
+        System.arraycopy(currentImages, 0, s.images, 0, 16);
+        return s;
     }
 }

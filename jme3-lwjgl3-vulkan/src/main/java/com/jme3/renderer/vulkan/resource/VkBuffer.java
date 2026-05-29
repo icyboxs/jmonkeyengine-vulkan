@@ -21,4 +21,6 @@ public final class VkBuffer {
     public long memory;
     public long capacity;     // 【新增容量记录】
     public boolean isHostVisible; // 【新增可见性】
+    // 【新增】：VMA 持久映射的内存地址指针，避免反复 map/unmap
+    public long mappedPointer = 0L;
 }

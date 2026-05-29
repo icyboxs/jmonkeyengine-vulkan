@@ -331,5 +331,40 @@ public final class VulkanRuntime {
     public int getDefaultAnisotropicFilter() {
         return facade.getDefaultAnisotropicFilter();
     }
-    
+
+    public void updateBufferObjectData(com.jme3.shader.bufferobject.BufferObject bo) {
+        facade.updateBufferObjectData(bo);
+    }
+
+    public void deleteBufferObject(com.jme3.shader.bufferobject.BufferObject bo) {
+        facade.deleteBufferObject(bo);
+    }
+
+    public com.jme3.renderer.vulkan.resource.VkBuffer getOrCreateBufferObject(com.jme3.shader.bufferobject.BufferObject bo) {
+        return facade.getOrCreateBufferObject(bo);
+    }
+
+    public void writeStorageBufferToSet(long dstSet, int dstBinding, long buffer, long offset, long range) {
+        facade.writeStorageBufferToSet(dstSet, dstBinding, buffer, offset, range);
+    }
+
+    public void writeStorageImageToSet(long dstSet, int dstBinding, com.jme3.renderer.vulkan.resource.VkTexture tex) {
+        facade.writeStorageImageToSet(dstSet, dstBinding, tex);
+    }
+
+    public com.jme3.renderer.vulkan.pipeline.VulkanPipeline getOrCreateComputePipeline(com.jme3.renderer.vulkan.pipeline.VkComputePipelineKey key, String compSrc) {
+        return facade.getOrCreateComputePipeline(key, compSrc);
+    }
+
+    public com.jme3.renderer.vulkan.reflection.PipelineDescriptorBindingPlan getComputeBindingPlan(com.jme3.renderer.vulkan.pipeline.VkComputePipelineKey key) {
+        return facade.getComputeBindingPlan(key);
+    }
+
+    public com.jme3.renderer.vulkan.resource.VkUboLayout getPipelineUboLayoutForCompute(com.jme3.renderer.vulkan.pipeline.VkComputePipelineKey key) {
+        return facade.getPipelineUboLayoutForCompute(key);
+    }
+
+    public com.jme3.renderer.vulkan.resource.VulkanBufferObjectManager getBufferObjectManager() {
+        return s.bufferObjectManager;
+    }
 }

@@ -100,10 +100,13 @@ public final class PlanDrivenSetResolver {
             String dtype = (e.descriptorType != null) ? e.descriptorType.toUpperCase() : "";
 
             if (dtype.contains("COMBINED_IMAGE_SAMPLER")) {
-                // 【核心修改】传入 setPlan.setIndex 用于坐标比对
                 writeSamplerBinding(req, set, setPlan.setIndex, e);
             } else if (dtype.contains("UNIFORM_BUFFER")) {
                 writeBufferBinding(req, set, e);
+            } else if (dtype.contains("STORAGE_BUFFER")) {
+                writeStorageBufferBinding(req, set, e);
+            } else if (dtype.contains("STORAGE_IMAGE")) {
+                writeStorageImageBinding(req, set, e);
             } else {
                 throw new IllegalStateException("Unsupported descriptorType: " + e.descriptorType);
             }
@@ -111,8 +114,61 @@ public final class PlanDrivenSetResolver {
         return set;
     }
 
+    private void writeStorageBufferBinding(DescriptorBindRequest req, long dstSet, BindingPlanEntry e) {
+        com.jme3.shader.bufferobject.BufferObject bo = null;
+        if (req.computeCmd != null && e.binding < 16) {
+            bo = req.computeCmd.ssbos[e.binding];
+        } else if (req.drawCmd != null && e.binding < 16) {
+            bo = req.drawCmd.ssbos[e.binding];
+        }
+
+        if (bo != null) {
+            com.jme3.renderer.vulkan.resource.VkBuffer vkBuf = runtime.getOrCreateBufferObject(bo);
+            if (vkBuf != null && vkBuf.handle != 0L) {
+                runtime.writeStorageBufferToSet(dstSet, e.binding, vkBuf.handle, 0L, vkBuf.capacity);
+            }
+        }
+    }
+
+    private void writeStorageImageBinding(DescriptorBindRequest req, long dstSet, BindingPlanEntry e) {
+        com.jme3.texture.TextureImage ti = null;
+        if (req.computeCmd != null && e.binding < 16) {
+            ti = req.computeCmd.images[e.binding];
+        } else if (req.drawCmd != null && e.binding < 16) {
+            ti = req.drawCmd.images[e.binding];
+        }
+
+        if (ti != null) {
+            Texture tex = extractTexture(ti);
+            if (tex != null) {
+                VkTexture vkTex = runtime.getOrCreateVkTexture(tex);
+                if (vkTex != null && vkTex.view != 0L) {
+                    runtime.writeStorageImageToSet(dstSet, e.binding, vkTex);
+                }
+            }
+        }
+    }
+
+    private Texture extractTexture(Object ti) {
+        if (ti == null) {
+            return null;
+        }
+        if (ti instanceof Texture) {
+            return (Texture) ti;
+        }
+        try {
+            return (Texture) ti.getClass().getMethod("getTexture").invoke(ti);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private void writeSamplerBinding(DescriptorBindRequest req, long dstSet, int setIndex, BindingPlanEntry e) {
         Texture texJme = pickTexture(req, setIndex, e.binding);
+        if (texJme == null && req.computeCmd != null && e.binding < 16) {
+            texJme = extractTexture(req.computeCmd.images[e.binding]);
+        }
+
         VkTexture texVk;
         long sampler;
 
@@ -144,7 +200,6 @@ public final class PlanDrivenSetResolver {
         }
     }
 
-// 【修改】：使用绝对的 set/binding 物理槽位寻找动态数组里存放的对应贴图
     private static Texture pickTexture(DescriptorBindRequest req, int setIndex, int bindingIndex) {
         if (req == null || req.drawCmd == null) {
             return null;
@@ -161,7 +216,6 @@ public final class PlanDrivenSetResolver {
             }
         }
 
-        // 终极保护网：如果没有匹配上，强送第一张基础纹理，杜绝画面丢失
         if (!cmd.useWhiteTex0 && cmd.jmeTex0Snapshot != null) {
             return cmd.jmeTex0Snapshot;
         }
@@ -189,6 +243,10 @@ public final class PlanDrivenSetResolver {
                 }
 
                 Texture t = pickTexture(req, setPlan.setIndex, e.binding);
+                if (t == null && req.computeCmd != null && e.binding < 16) {
+                    t = extractTexture(req.computeCmd.images[e.binding]);
+                }
+
                 VkTexture vk = runtime.getOrCreateVkTexture(t);
 
                 long view = 0L;
@@ -215,7 +273,23 @@ public final class PlanDrivenSetResolver {
     }
 
     private FrameSetKey buildFrameKey(DescriptorBindRequest req, SetBindingPlan setPlan, long setLayout) {
-        return new FrameSetKey(req.frameIndex, setLayout, req.pipelineHash, req.objectId, req.extraTexId);
+        boolean onlyDynamicUbo = true;
+        if (setPlan.bindings != null) {
+            for (com.jme3.renderer.vulkan.reflection.BindingPlanEntry e : setPlan.bindings) {
+                // 如果存在非 Dynamic 绑定的内容 (比如 SSBO)，则不能全局共享
+                if (!e.dynamic) {
+                    onlyDynamicUbo = false;
+                    break;
+                }
+            }
+        }
+
+        // 如果该 Set 里只包含了 DYNAMIC UBO，那么这个 Descriptor Set 的内容是全局固定的！
+        // 剥离 objectId，让同管线的所有对象共享这唯一一个 Set 句柄，彻底消除分配开销！
+        int objId = onlyDynamicUbo ? 0 : req.objectId;
+        int texExt = onlyDynamicUbo ? 0 : req.extraTexId;
+
+        return new FrameSetKey(req.frameIndex, setLayout, req.pipelineHash, objId, texExt);
     }
 
     private static final class MaterialSetKey {

@@ -15,9 +15,8 @@ import static org.lwjgl.vulkan.VK10.VK_SHADER_STAGE_VERTEX_BIT;
 /**
  * S2-T3/S2-T4: 反射结果缓存 + 命中统计回调
  *
- * 说明：
- * - 主路径请使用 reflect(ShaderArtifact vert, ShaderArtifact frag)，会走真实 SPIR-V 反射。
- * - reflect(int vertHash, int fragHash) 仅为兼容旧调用，返回固定 fallback 结果。
+ * 说明： - 主路径请使用 reflect(ShaderArtifact vert, ShaderArtifact frag)，会走真实 SPIR-V
+ * 反射。 - reflect(int vertHash, int fragHash) 仅为兼容旧调用，返回固定 fallback 结果。
  */
 public final class VkReflectionManager {
 
@@ -26,7 +25,9 @@ public final class VkReflectionManager {
     private final SpirvReflector reflector = new SpirvReflector();
 
     public interface StatsSink {
+
         void onHit();
+
         void onMiss();
     }
 
@@ -114,7 +115,6 @@ public final class VkReflectionManager {
     }
 
     // ---------------- internal ----------------
-
     private void onCacheHit(VkReflectionCacheKey key, boolean verboseLog) {
         hitCount++;
         if (statsSink != null) {
@@ -194,9 +194,26 @@ public final class VkReflectionManager {
         return new VkReflectionResult(
                 vertHash,
                 fragHash,
+                0, // 补充遗漏的 Compute Hash 参数
                 bs,
-                Collections.emptyList(),
+                Collections.<VkReflectionResult.UboMember>emptyList(),
                 pcs
         );
+    }
+
+    public VkReflectionResult reflectCompute(com.jme3.renderer.vulkan.shader.ShaderArtifact comp) {
+        int cHash = (comp != null) ? comp.sourceHash : 0;
+        VkReflectionCacheKey key = new VkReflectionCacheKey(0, 0, cHash);
+
+        VkReflectionResult cached = cache.get(key);
+        if (cached != null) {
+            onCacheHit(key, false);
+            return cached;
+        }
+        onCacheMiss(key, false);
+
+        VkReflectionResult r = reflector.reflectCompute(comp != null ? comp.spirv : null, cHash);
+        cache.put(key, r);
+        return r;
     }
 }

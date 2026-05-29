@@ -1,21 +1,8 @@
 package com.jme3.renderer.vulkan.resource;
 
 import com.jme3.renderer.vulkan.context.VkContext;
-import com.jme3.renderer.vulkan.pipeline.PassKey;
-import com.jme3.renderer.vulkan.pipeline.VkPipelineKey;
-import com.jme3.renderer.vulkan.pipeline.VkShaderKey;
-import com.jme3.renderer.vulkan.pipeline.VkVariantKey;
-import com.jme3.renderer.vulkan.pipeline.VulkanPipeline;
-import com.jme3.renderer.vulkan.reflection.BindingPlanEntry;
-import com.jme3.renderer.vulkan.reflection.CacheClass;
-import com.jme3.renderer.vulkan.reflection.DynamicBindingRef;
-import com.jme3.renderer.vulkan.reflection.ParamBindingPlan;
-import com.jme3.renderer.vulkan.reflection.PipelineDescriptorBindingPlan;
-import com.jme3.renderer.vulkan.reflection.ResourceSemantic;
-import com.jme3.renderer.vulkan.reflection.SetBindingPlan;
-import com.jme3.renderer.vulkan.reflection.VkPipelineLayoutSignature;
-import com.jme3.renderer.vulkan.reflection.VkReflectionManager;
-import com.jme3.renderer.vulkan.reflection.VkReflectionResult;
+import com.jme3.renderer.vulkan.pipeline.*;
+import com.jme3.renderer.vulkan.reflection.*;
 import com.jme3.renderer.vulkan.runtime.VulkanRuntimeStats;
 import com.jme3.renderer.vulkan.shader.ShaderArtifact;
 import com.jme3.renderer.vulkan.shader.VulkanShaders;
@@ -44,6 +31,10 @@ public final class VulkanPipelineManager {
     private final Map<VkPipelineKey, Boolean> pipelineHasPushConstants = new HashMap<>();
     private final Map<VkPipelineKey, ParamBindingPlan> pipelineParamPlanCache = new HashMap<>();
     private final Map<VkPipelineKey, PipelineDescriptorBindingPlan> pipelineBindingPlanCache = new HashMap<>();
+
+    private final Map<VkComputePipelineKey, VulkanPipeline> computePipelineCache = new HashMap<>();
+    private final Map<VkComputePipelineKey, PipelineDescriptorBindingPlan> computeBindingPlanCache = new HashMap<>();
+    private final Map<VkComputePipelineKey, VkUboLayout> computeUboLayoutCache = new HashMap<>();
 
     private final VkContext vk;
     private final VulkanShaders shaders;
@@ -92,7 +83,7 @@ public final class VulkanPipelineManager {
 
         long[] baseSetLayouts = buildSetLayoutsForSignature(VkPipelineLayoutSignature.empty());
 
-        basePipeline = new VulkanPipeline(vk, shaders, baseSetLayouts, baseKey, null, null);
+        basePipeline = new VulkanPipeline(vk, shaders, baseSetLayouts, baseKey, 0L, null, null);
         basePipeline.init();
         pipelineCache.put(baseKey, basePipeline);
 
@@ -154,11 +145,43 @@ public final class VulkanPipelineManager {
             np.init();
             pipelineCache.put(key, np);
 
-            LOGGER.info("[BindingPlan] key=" + key.hashCode() + " plan=" + bindingPlan);
             return np;
 
         } catch (IOException e) {
             throw new RuntimeException("Failed to create pipeline for key", e);
+        }
+    }
+
+    public VulkanPipeline getOrCreateComputePipeline(VkComputePipelineKey key, String compSrc) {
+        VulkanPipeline p = computePipelineCache.get(key);
+        if (p != null) {
+            return p;
+        }
+
+        try {
+            ShaderArtifact compArt = shaders.getOrCreateArtifactFromRawGlsl(compSrc, VK_SHADER_STAGE_COMPUTE_BIT, "pm-comp");
+            VkReflectionResult rr = reflectionManager.reflectCompute(compArt);
+
+            PipelineDescriptorBindingPlan bindingPlan = buildPipelineBindingPlan(rr);
+            computeBindingPlanCache.put(key, bindingPlan);
+            computeUboLayoutCache.put(key, VkUboLayout.fromReflection(rr));
+
+            VkPipelineLayoutSignature sig = VkPipelineLayoutSignature.fromReflection(rr);
+            long[] setLayouts = buildSetLayoutsForSignature(sig);
+
+            long chosenLayout = layoutCache.getOrDefault(sig, 0L);
+            if (chosenLayout == 0L) {
+                chosenLayout = createPipelineLayoutWithPushConstants(sig, setLayouts);
+                layoutCache.put(sig, chosenLayout);
+            }
+
+            VulkanPipeline np = new VulkanPipeline(vk, shaders, setLayouts, chosenLayout, compSrc);
+            np.initCompute();
+            computePipelineCache.put(key, np);
+
+            return np;
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to create compute pipeline", e);
         }
     }
 
@@ -195,7 +218,6 @@ public final class VulkanPipelineManager {
     }
 
     public void destroy() {
-        // 1) 先销毁所有 graphics pipeline（不在这里销毁 pipelineLayout，避免重复）
         for (VulkanPipeline p : pipelineCache.values()) {
             if (p != null) {
                 p.destroy(false);
@@ -203,7 +225,13 @@ public final class VulkanPipelineManager {
         }
         pipelineCache.clear();
 
-        // 2) 销毁所有缓存的 pipeline layout（唯一可信来源：layoutCache）
+        for (VulkanPipeline p : computePipelineCache.values()) {
+            if (p != null) {
+                p.destroy(false);
+            }
+        }
+        computePipelineCache.clear();
+
         if (vk != null && vk.device() != null) {
             java.util.HashSet<Long> destroyed = new java.util.HashSet<>();
             for (Long layout : layoutCache.values()) {
@@ -215,7 +243,6 @@ public final class VulkanPipelineManager {
         layoutCache.clear();
         basePipeline = null;
 
-        // 3) 销毁 descriptor set layouts
         if (vk != null && vk.device() != null) {
             for (long layout : descriptorSetLayoutCache.values()) {
                 if (layout != 0L) {
@@ -225,17 +252,23 @@ public final class VulkanPipelineManager {
         }
         descriptorSetLayoutCache.clear();
 
-        // 4) 清理其他缓存
         pipelineUboLayoutCache.clear();
         pipelineHasPushConstants.clear();
         pipelineParamPlanCache.clear();
         pipelinePushConstantSize.clear();
         pipelineBindingPlanCache.clear();
+
+        computeBindingPlanCache.clear();
+        computeUboLayoutCache.clear();
     }
 
     public VkUboLayout getUboLayout(VkPipelineKey key) {
         VkUboLayout l = pipelineUboLayoutCache.get(key);
         return (l != null) ? l : VkUboLayout.empty();
+    }
+
+    public VkUboLayout getComputeUboLayout(VkComputePipelineKey key) {
+        return computeUboLayoutCache.getOrDefault(key, VkUboLayout.empty());
     }
 
     public boolean hasPushConstants(VkPipelineKey key) {
@@ -252,6 +285,11 @@ public final class VulkanPipelineManager {
 
     public PipelineDescriptorBindingPlan getBindingPlan(VkPipelineKey key) {
         PipelineDescriptorBindingPlan p = pipelineBindingPlanCache.get(key);
+        return (p != null) ? p : PipelineDescriptorBindingPlan.empty();
+    }
+
+    public PipelineDescriptorBindingPlan getComputeBindingPlan(VkComputePipelineKey key) {
+        PipelineDescriptorBindingPlan p = computeBindingPlanCache.get(key);
         return (p != null) ? p : PipelineDescriptorBindingPlan.empty();
     }
 
@@ -320,6 +358,10 @@ public final class VulkanPipelineManager {
                 return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
             case "UNIFORM_BUFFER":
                 return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            case "STORAGE_BUFFER":
+                return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            case "STORAGE_IMAGE":
+                return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
             case "COMBINED_IMAGE_SAMPLER":
                 return VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             default:
@@ -346,7 +388,6 @@ public final class VulkanPipelineManager {
                     p.setTextureSlot(b.set, slot);
                 }
 
-                // 【核心修复】：绝对限制只有真实的贴图才能放入 samplerByName！
                 String norm = ParamBindingPlan.normalizeParamName((b.name != null) ? b.name : "");
                 if (!norm.isEmpty()) {
                     p.samplerByName.put(norm, slot);
@@ -462,10 +503,16 @@ public final class VulkanPipelineManager {
             return ResourceSemantic.UNKNOWN_UBO;
         }
 
-        // 废除 COLOR_MAP 等死板枚举
         if (type.contains("COMBINED_IMAGE_SAMPLER")) {
             return ResourceSemantic.SAMPLED_IMAGE;
         }
+        if (type.contains("STORAGE_BUFFER")) {
+            return ResourceSemantic.STORAGE_BUFFER;
+        }
+        if (type.contains("STORAGE_IMAGE")) {
+            return ResourceSemantic.STORAGE_IMAGE;
+        }
+
         return ResourceSemantic.UNKNOWN_SAMPLER;
     }
 
@@ -491,22 +538,25 @@ public final class VulkanPipelineManager {
             if (dt.contains("UNIFORM_BUFFER")) {
                 hasAnyUbo = true;
             }
-            // 只要里面包含了贴图，就具备材质持久缓存潜力
             if (e.semantic == ResourceSemantic.SAMPLED_IMAGE) {
                 hasMaterial = true;
             }
 
             if (e.semantic == ResourceSemantic.PER_DRAW_UBO || e.semantic == ResourceSemantic.UNKNOWN_UBO
-                    || e.semantic == ResourceSemantic.ALPHA_PARAMS || e.semantic == ResourceSemantic.DESATURATION_PARAMS) {
+                    || e.semantic == ResourceSemantic.ALPHA_PARAMS || e.semantic == ResourceSemantic.DESATURATION_PARAMS
+                    || e.semantic == ResourceSemantic.STORAGE_BUFFER || e.semantic == ResourceSemantic.STORAGE_IMAGE) {
                 hasPerDraw = true;
             }
         }
 
-        if (hasDynamic || hasPerDraw || hasAnyUbo) {
-            return CacheClass.PER_DRAW;
-        }
+        // 优先提升缓存级别
+        // 只要有贴图，必定作为 MATERIAL 级别缓存 (跨帧跨 Draw 复用)
         if (hasMaterial) {
             return CacheClass.MATERIAL;
+        }
+        // 如果只有 Dynamic UBO，它也可以提升为 PER_FRAME 级别 (整个帧共享一个句柄，仅偏移量不同)
+        if (hasDynamic || hasPerDraw || hasAnyUbo) {
+            return CacheClass.PER_FRAME;
         }
 
         return CacheClass.NONE;
